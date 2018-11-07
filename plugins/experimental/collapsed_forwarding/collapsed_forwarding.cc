@@ -33,6 +33,7 @@
 ////////////////////////////////////////////////////////////////////////////////////
 // proxy.config.http.cache.open_write_fail_action        1 /////////////////////////
 // proxy.config.cache.enable_read_while_writer           1 /////////////////////////
+// proxy.config.http.redirection_enabled                 1 /////////////////////////
 // proxy.config.http.number_of_redirections             10 /////////////////////////
 // proxy.config.http.redirect_use_orig_cache_key         1 /////////////////////////
 // proxy.config.http.background_fill_active_timeout      0 /////////////////////////
@@ -50,19 +51,12 @@
 // This plugin currently supports only per-remap mode activation.
 ////////////////////////////////////////////////////////////////////////////////////
 
-#include <sys/time.h>
 #include <ts/ts.h>
 #include <ts/remap.h>
-#include <set>
-#include <string>
+
 #include <cstring>
-#include <cstdlib>
-#include <cstdint>
-#include <cstdio>
-#include <cstdarg>
-#include <getopt.h>
-#include <netdb.h>
-#include <map>
+#include <string_view>
+#include <string>
 
 static const char *DEBUG_TAG = (char *)"collapsed_forwarding";
 
@@ -75,14 +69,34 @@ static int OPEN_WRITE_FAIL_REQ_DELAY_TIMEOUT     = 500;
 
 static bool global_init = false;
 
-typedef struct _RequestData {
-  TSHttpTxn txnp;
-  int wl_retry; // write lock failure retry count
-  std::string req_url;
-} RequestData;
+// overriding new/delete means no emplace_* or make_* calls
+void *
+operator new(size_t num)
+{
+  return TSmalloc(num);
+}
+
+void
+operator delete(void *ptr)
+{
+  TSfree(ptr);
+}
+
+void
+operator delete(void *ptr, size_t)
+{
+  TSfree(ptr);
+}
+
+struct RequestData {
+  TSHttpTxn txnp{nullptr};
+  int wl_retry{0};            // write lock failure retry count
+  char *req_url_str{nullptr}; // owns the string
+  std::string_view req_url;   // view into req_url_str
+};
 
 static int
-add_redirect_header(TSMBuffer &bufp, TSMLoc &hdr_loc, const std::string &location)
+add_redirect_header(TSMBuffer &bufp, TSMLoc &hdr_loc, std::string_view const &location)
 {
   // This is needed in case the response already contains a Location header
   TSMLoc field_loc = TSMimeHdrFieldFind(bufp, hdr_loc, LOCATION_HEADER, strlen(LOCATION_HEADER));
@@ -91,7 +105,7 @@ add_redirect_header(TSMBuffer &bufp, TSMLoc &hdr_loc, const std::string &locatio
     TSMimeHdrFieldCreateNamed(bufp, hdr_loc, LOCATION_HEADER, strlen(LOCATION_HEADER), &field_loc);
   }
 
-  if (TS_SUCCESS == TSMimeHdrFieldValueStringSet(bufp, hdr_loc, field_loc, -1, location.c_str(), location.size())) {
+  if (TS_SUCCESS == TSMimeHdrFieldValueStringSet(bufp, hdr_loc, field_loc, -1, location.data(), location.length())) {
     TSDebug(DEBUG_TAG, "Adding Location header %s", LOCATION_HEADER);
     TSMimeHdrFieldAppend(bufp, hdr_loc, field_loc);
   }
@@ -132,7 +146,8 @@ static int
 on_OS_DNS(const RequestData *req, TSHttpTxn &txnp)
 {
   if (req->wl_retry > 0) {
-    TSDebug(DEBUG_TAG, "OS_DNS request delayed %d times, block origin req for url: %s", req->wl_retry, req->req_url.c_str());
+    TSDebug(DEBUG_TAG, "OS_DNS request delayed %d times, block origin req for url: %.*s", req->wl_retry, (int)req->req_url.length(),
+            req->req_url.data());
     TSHttpTxnReenable(txnp, TS_EVENT_HTTP_ERROR);
     return TS_SUCCESS;
   }
@@ -145,7 +160,8 @@ static int
 on_send_request_header(const RequestData *req, TSHttpTxn &txnp)
 {
   if (req->wl_retry > 0) {
-    TSDebug(DEBUG_TAG, "Send_Req request delayed %d times, block origin req for url: %s", req->wl_retry, req->req_url.c_str());
+    TSDebug(DEBUG_TAG, "Send_Req request delayed %d times, block origin req for url: %.*s", req->wl_retry,
+            (int)req->req_url.length(), req->req_url.data());
     TSHttpTxnReenable(txnp, TS_EVENT_HTTP_ERROR);
     return TS_SUCCESS;
   }
@@ -169,15 +185,14 @@ on_immediate(RequestData *req, TSCont &contp)
     return TS_SUCCESS;
   }
 
-  TSDebug(DEBUG_TAG, "continuation delayed, scheduling now..for url: %s", req->req_url.c_str());
+  TSDebug(DEBUG_TAG, "continuation delayed, scheduling now..for url: %.*s", (int)req->req_url.length(), req->req_url.data());
 
   // add retry_done header to prevent looping
-  std::string value;
   TSMBuffer bufp;
   TSMLoc hdr_loc;
   if (TSHttpTxnClientRespGet(req->txnp, &bufp, &hdr_loc) != TS_SUCCESS) {
-    TSError("plugin=%s, level=error, error_code=could_not_retrieve_client_response_header for url %s", DEBUG_TAG,
-            req->req_url.c_str());
+    TSError("plugin=%s, level=error, error_code=could_not_retrieve_client_response_header for url %.*s", DEBUG_TAG,
+            (int)req->req_url.length(), req->req_url.data());
     TSHttpTxnReenable(req->txnp, TS_EVENT_HTTP_ERROR);
     return TS_SUCCESS;
   }
@@ -209,7 +224,8 @@ on_send_response_header(RequestData *req, TSHttpTxn &txnp, TSCont &contp)
 
     if (delay_request) {
       req->wl_retry++;
-      TSDebug(DEBUG_TAG, "delaying request, url@%p: {{%s}} on retry: %d time", txnp, req->req_url.c_str(), req->wl_retry);
+      TSDebug(DEBUG_TAG, "delaying request, url@%p: {{%.*s}} on retry: %d time", txnp, (int)req->req_url.length(),
+              req->req_url.data(), req->wl_retry);
       TSContSchedule(contp, OPEN_WRITE_FAIL_REQ_DELAY_TIMEOUT, TS_THREAD_POOL_TASK);
       TSHandleMLocRelease(bufp, TS_NULL_MLOC, hdr_loc);
       return TS_SUCCESS;
@@ -217,8 +233,8 @@ on_send_response_header(RequestData *req, TSHttpTxn &txnp, TSCont &contp)
   }
 
   if (req->wl_retry > 0) {
-    TSDebug(DEBUG_TAG, "request delayed, but unsuccessful, url@%p: {{%s}} on retry: %d time", txnp, req->req_url.c_str(),
-            req->wl_retry);
+    TSDebug(DEBUG_TAG, "request delayed, but unsuccessful, url@%p: {{%.*s}} on retry: %d time", txnp, (int)req->req_url.length(),
+            req->req_url.data(), req->wl_retry);
     req->wl_retry = 0;
   }
 
@@ -231,6 +247,9 @@ static int
 on_txn_close(RequestData *req, TSHttpTxn &txnp, TSCont &contp)
 {
   // done..cleanup
+  if (nullptr != req->req_url_str) {
+    TSfree(req->req_url_str);
+  }
   delete req;
   TSContDestroy(contp);
   TSHttpTxnReenable(txnp, TS_EVENT_HTTP_CONTINUE);
@@ -242,18 +261,22 @@ static int collapsed_cont(TSCont contp, TSEvent event, void *edata);
 void
 setup_transaction_cont(TSHttpTxn rh)
 {
+  int url_len = 0;
+  char *const url   = TSHttpTxnEffectiveUrlStringGet(rh, &url_len);
+  if (0 == url_len) {
+    TSAssert("Invalid EffectiveUrlStringGet");
+		return;
+	}
+
   TSCont cont = TSContCreate(collapsed_cont, TSMutexCreate());
 
-  RequestData *req_data = new RequestData();
+  RequestData *const req_data = new RequestData();
 
   req_data->txnp     = rh;
   req_data->wl_retry = 0;
+  req_data->req_url_str = url;
+  req_data->req_url     = std::string_view(url, url_len);
 
-  int url_len = 0;
-  char *url   = TSHttpTxnEffectiveUrlStringGet(rh, &url_len);
-  req_data->req_url.assign(url, url_len);
-
-  TSfree(url);
   TSContDataSet(cont, req_data);
 
   TSHttpTxnHookAdd(rh, TS_HTTP_SEND_REQUEST_HDR_HOOK, cont);
@@ -271,35 +294,30 @@ collapsed_cont(TSCont contp, TSEvent event, void *edata)
 
   switch (event) {
   case TS_EVENT_HTTP_READ_REQUEST_HDR:
-    // Create per transaction state
     setup_transaction_cont(txnp);
     break;
-
-  case TS_EVENT_HTTP_OS_DNS: {
+  case TS_EVENT_HTTP_OS_DNS:
     return on_OS_DNS(my_req, txnp);
-  }
-
-  case TS_EVENT_HTTP_SEND_REQUEST_HDR: {
+		break;
+  case TS_EVENT_HTTP_SEND_REQUEST_HDR:
     return on_send_request_header(my_req, txnp);
-  }
-
-  case TS_EVENT_HTTP_READ_RESPONSE_HDR: {
+		break;
+  case TS_EVENT_HTTP_READ_RESPONSE_HDR:
     return on_read_response_header(txnp);
-  }
+		break;
   case TS_EVENT_IMMEDIATE:
-  case TS_EVENT_TIMEOUT: {
+  case TS_EVENT_TIMEOUT:
     return on_immediate(my_req, contp);
-  }
-  case TS_EVENT_HTTP_SEND_RESPONSE_HDR: {
+		break;
+  case TS_EVENT_HTTP_SEND_RESPONSE_HDR:
     return on_send_response_header(my_req, txnp, contp);
-  }
-  case TS_EVENT_HTTP_TXN_CLOSE: {
+		break;
+  case TS_EVENT_HTTP_TXN_CLOSE:
     return on_txn_close(my_req, txnp, contp);
-  }
-  default: {
+		break;
+  default:
     TSDebug(DEBUG_TAG, "Unexpected event: %d", event);
     break;
-  }
   }
 
   TSHttpTxnReenable(txnp, TS_EVENT_HTTP_CONTINUE);
@@ -332,7 +350,7 @@ TSPluginInit(int argc, const char *argv[])
   info.support_email = (char *)"dev@trafficserver.apache.org";
 
   if (TS_SUCCESS != TSPluginRegister(&info)) {
-    TSError("[%s] Plugin registration failed", DEBUG_TAG);
+    TSError("[%s] Plugin registration failed.", DEBUG_TAG);
   }
 
   process_args(argc, argv);
