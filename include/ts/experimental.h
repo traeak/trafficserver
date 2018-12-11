@@ -199,6 +199,7 @@ tsapi TSReturnCode TSHttpTxnRedirectRequest(TSHttpTxn txnp, TSMBuffer bufp, TSML
 tsapi TSReturnCode TSHttpTxnServerRespIgnore(TSHttpTxn txnp);
 tsapi TSReturnCode TSHttpTxnShutDown(TSHttpTxn txnp, TSEvent event);
 tsapi TSReturnCode TSHttpTxnCloseAfterResponse(TSHttpTxn txnp, int should_close);
+tsapi void TSHttpTxnRedoCacheLookup(TSHttpTxn txnp);
 
 /****************************************************************************
  *  ??

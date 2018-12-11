@@ -21,9 +21,14 @@
   limitations under the License.
  */
 
-#include <ts/ts.h>
+#include <stdlib.h>
+#include <string.h>
 
-#define PLUGIN_NAME "hook-trace"
+#include <ts/apidefs.h>
+#include <ts/ts.h>
+#include <ts/experimental.h>
+
+#define PLUGIN_NAME "hi-there"
 
 template <typename T, unsigned N>
 static inline unsigned
@@ -35,6 +40,8 @@ countof(const T (&)[N])
 static int
 HttpHookTracer(TSCont contp, TSEvent event, void *edata)
 {
+  int * flag = (int *)TSContDataGet(contp);
+
   union {
     TSHttpTxn txn;
     TSHttpSsn ssn;
@@ -100,8 +107,63 @@ HttpHookTracer(TSCont contp, TSEvent event, void *edata)
     break;
 
   case TS_EVENT_HTTP_CACHE_LOOKUP_COMPLETE:
-    TSDebug(PLUGIN_NAME, "Received CACHE_LOOKUP_COMPLETE on transaction %p", ev.txn);
-    TSHttpTxnReenable(ev.txn, TS_EVENT_HTTP_CONTINUE);
+    {
+      TSDebug(PLUGIN_NAME, "Received CACHE_LOOKUP_COMPLETE on transaction %p", ev.txn);
+
+      TSDebug(PLUGIN_NAME, "flag %i", *flag);
+
+      TSMBuffer buffer;
+      TSMLoc location = NULL, location2 = NULL;
+
+      TSHttpTxnClientReqGet(ev.txn, &buffer, &location);
+      TSHttpHdrUrlGet(buffer, location, &location2);
+
+      {
+        int length = 0;
+        const char * path = TSUrlPathGet(buffer, location2, &length);
+        char buffer[length + 1];
+        strncpy(buffer, path, length);
+        buffer[length] = '\0';
+        TSDebug(PLUGIN_NAME, "current url path is %s", buffer);
+      }
+
+      int status = TS_ERROR;
+      TSHttpTxnCacheLookupStatusGet(ev.txn, &status);
+
+      const char * cacheStatus = "CACHE_LOOKUP_NONE";
+
+      switch (status) {
+      case TS_CACHE_LOOKUP_MISS:
+        cacheStatus = "TS_CACHE_LOOKUP_MISS";
+        break;
+      case TS_CACHE_LOOKUP_HIT_STALE:
+        cacheStatus = "TS_CACHE_LOOKUP_HIT_STALE";
+        break;
+      case TS_CACHE_LOOKUP_HIT_FRESH:
+        cacheStatus = "TS_CACHE_LOOKUP_HIT_FRESH";
+        break;
+      case TS_CACHE_LOOKUP_SKIPPED:
+        cacheStatus = "TS_CACHE_LOOKUP_SKIPED";
+        break;
+      }
+
+      TSDebug(PLUGIN_NAME, "Cache Status: %s", cacheStatus);
+
+      if (TS_CACHE_LOOKUP_MISS == status) {
+        //flag here is a global used to avoid cache look-up rewind loops.
+        if (*flag < 1) {
+          TSUrlPathSet(buffer, location2, "djb.html", 8);
+          TSHttpTxnRedoCacheLookup(ev.txn);
+          *flag = 1;
+        } else {
+          *flag = 0;
+        }
+      } else {
+        *flag = 0;
+      }
+
+      TSHttpTxnReenable(ev.txn, TS_EVENT_HTTP_CONTINUE);
+    }
     break;
 
   case TS_EVENT_HTTP_PRE_REMAP:
@@ -121,76 +183,18 @@ HttpHookTracer(TSCont contp, TSEvent event, void *edata)
   return TS_EVENT_NONE;
 }
 
-static int
-LifecycleHookTracer(TSCont contp, TSEvent event, void *edata)
-{
-  switch (event) {
-  case TS_EVENT_LIFECYCLE_PORTS_INITIALIZED:
-    TSDebug(PLUGIN_NAME, "Received LIFECYCLE_PORTS_INITIALIZED data %p", edata);
-    break;
-
-  case TS_EVENT_LIFECYCLE_PORTS_READY:
-    TSDebug(PLUGIN_NAME, "Received LIFECYCLE_PORTS_READY data %p", edata);
-    break;
-
-  case TS_EVENT_LIFECYCLE_CACHE_READY:
-    TSDebug(PLUGIN_NAME, "Received LIFECYCLE_CACHE_READY data %p", edata);
-    break;
-
-  case TS_EVENT_LIFECYCLE_SERVER_SSL_CTX_INITIALIZED:
-    TSDebug(PLUGIN_NAME, "Received LIFECYCLE_SERVER_SSL_INITIALIZED data %p", edata);
-    break;
-
-  case TS_EVENT_LIFECYCLE_CLIENT_SSL_CTX_INITIALIZED:
-    TSDebug(PLUGIN_NAME, "Received LIFECYCLE_CLIENT_SSL_CTX_INITIALIZED data %p", edata);
-    break;
-
-  case TS_EVENT_LIFECYCLE_MSG:
-    TSDebug(PLUGIN_NAME, "Received LIFECYCLE_MSG data %p", edata);
-    break;
-
-  default:
-    TSDebug(PLUGIN_NAME, "Received unsupported lifecycle event %d data %p", event, edata);
-    break;
-  }
-
-  return TS_EVENT_NONE;
-}
-
 void
-TSPluginInit(int argc, const char *argv[])
+TSPluginInit(int, const char * [])
 {
-  // clang-format off
   static const TSHttpHookID http[] = {
-    TS_HTTP_READ_REQUEST_HDR_HOOK,
     TS_HTTP_OS_DNS_HOOK,
     TS_HTTP_SEND_REQUEST_HDR_HOOK,
     TS_HTTP_READ_CACHE_HDR_HOOK,
-    TS_HTTP_READ_RESPONSE_HDR_HOOK,
-    TS_HTTP_SEND_RESPONSE_HDR_HOOK,
     TS_HTTP_SELECT_ALT_HOOK,
-    TS_HTTP_TXN_START_HOOK,
-    TS_HTTP_TXN_CLOSE_HOOK,
-    TS_HTTP_SSN_START_HOOK,
-    TS_HTTP_SSN_CLOSE_HOOK,
     TS_HTTP_CACHE_LOOKUP_COMPLETE_HOOK,
-    TS_HTTP_PRE_REMAP_HOOK,
     TS_HTTP_POST_REMAP_HOOK,
+
   };
-
-  static const TSLifecycleHookID lifecycle[] = {
-    TS_LIFECYCLE_PORTS_INITIALIZED_HOOK,
-    TS_LIFECYCLE_PORTS_READY_HOOK,
-    TS_LIFECYCLE_CACHE_READY_HOOK,
-    TS_LIFECYCLE_SERVER_SSL_CTX_INITIALIZED_HOOK,
-    TS_LIFECYCLE_CLIENT_SSL_CTX_INITIALIZED_HOOK,
-    TS_LIFECYCLE_MSG_HOOK,
-  };
-
-  // clang-format on
-
-  (void)argc; // unused
-  (void)argv; // unused
 
   TSPluginRegistrationInfo info;
 
@@ -198,12 +202,13 @@ TSPluginInit(int argc, const char *argv[])
   info.vendor_name   = (char *)"Apache Software Foundation";
   info.support_email = (char *)"dev@trafficserver.apache.org";
 
-  for (unsigned i = 0; i < countof(http); ++i) {
-    TSHttpHookAdd(http[i], TSContCreate(HttpHookTracer, TSMutexCreate()));
-  }
+  TSCont const continuation = TSContCreate(HttpHookTracer, TSMutexCreate());
+  int * const flag = (int *)malloc(sizeof(int));
+  *flag = 0;
+  TSContDataSet(continuation, flag);
 
-  for (unsigned i = 0; i < countof(lifecycle); ++i) {
-    TSLifecycleHookAdd(lifecycle[i], TSContCreate(LifecycleHookTracer, TSMutexCreate()));
+  for (unsigned i = 0; i < countof(http); ++i) {
+    TSHttpHookAdd(http[i], continuation);
   }
 
   TSReleaseAssert(TSPluginRegister(&info) == TS_SUCCESS);

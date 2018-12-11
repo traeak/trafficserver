@@ -168,6 +168,7 @@ enum HttpApiState_t {
   HTTP_API_IN_CALLOUT,
   HTTP_API_DEFERED_CLOSE,
   HTTP_API_DEFERED_SERVER_ERROR,
+  HTTP_API_REWIND_STATE_MACHINE,
 };
 
 enum HttpPluginTunnel_t {
@@ -624,6 +625,8 @@ public:
   {
     return _client_transaction_id;
   }
+
+  void rewind_state_machine();
 
 private:
   PostDataBuffers _postbuf;

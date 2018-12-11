@@ -5155,6 +5155,22 @@ TSHttpTxnRedirectRequest(TSHttpTxn txnp, TSMBuffer bufp, TSMLoc url_loc)
   return TS_SUCCESS;
 }
 
+void
+TSHttpTxnRedoCacheLookup(TSHttpTxn txnp)
+{
+  sdk_assert(sdk_sanity_check_txn(txnp) == TS_SUCCESS);
+  HttpSM *sm                     = (HttpSM *)txnp;
+  HttpTransact::State * s        = &(sm->t_state);
+	if (s->next_action == HttpTransact::SM_ACTION_API_CACHE_LOOKUP_COMPLETE) {
+		s->next_action           = HttpTransact::SM_ACTION_CACHE_LOOKUP;
+		s->api_next_action       = HttpTransact::SM_ACTION_CACHE_LOOKUP;
+  	s->transact_return_point = nullptr;
+	} else if (s->next_action == HttpTransact::SM_ACTION_CACHE_LOOKUP) {
+  	s->transact_return_point = nullptr;
+	}
+  sm->rewind_state_machine();
+}
+
 /**
  * timeout is in msec
  * overrides as proxy.config.http.transaction_active_timeout_out
