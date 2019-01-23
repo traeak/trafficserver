@@ -375,6 +375,11 @@ Configs::loadClassifiers(const String &args, bool blacklist)
 bool
 Configs::init(int argc, const char *argv[], bool perRemapConfig)
 {
+  static const struct option configopt[] = {
+    {const_cast<char *>("config"), optional_argument, nullptr, 'a'},
+    {nullptr, 0, nullptr, 0},
+  };
+
   static const struct option longopt[] = {
     {const_cast<char *>("exclude-params"), optional_argument, nullptr, 'a'},
     {const_cast<char *>("include-params"), optional_argument, nullptr, 'b'},
@@ -400,13 +405,48 @@ Configs::init(int argc, const char *argv[], bool perRemapConfig)
     {nullptr, 0, nullptr, 0},
   };
 
-  bool status = true;
-
   /* For remap.config: argv contains the "to" and "from" URLs. Skip the first so that the second one poses as the program name.
    * For plugin.config: argv contains the plugin shared object name. Don't skip any */
   if (perRemapConfig) {
     argc--;
     argv++;
+  }
+
+  /* if config file is provided, read that into argc/argv and call in */
+  bool status         = true;
+  int const optconfig = getopt_long(argc, (char **)argv, "", configopt, nullptr);
+  if ('a' == optconfig) {
+    std::ifstream ifs(optarg);
+    if (ifs) {
+      /* one arg per uncommented line */
+      std::vector<std::string> args;
+
+      std::string line;
+      while (std::getline(ifs, line)) {
+        if (!line.empty() && '#' != line[0]) {
+          args.push_back(std::move(line));
+        }
+      }
+      ifs.close();
+
+      /* dump into a new argc/argv */
+      int const argcnew    = args.size();
+      char **const argvnew = (char **)malloc((argcnew + 1) * sizeof(char *));
+
+      for (unsigned ind = 0; ind < args.size(); ++ind) {
+        argvnew[ind] = strdup(args[ind].c_str());
+      }
+      argvnew[argcnew] = nullptr;
+
+      bool const status = this->init(argcnew, (const char **)argvnew, false);
+
+      for (int ind = 0; ind < argcnew; ++ind) {
+        free(argvnew[ind]);
+      }
+      free(argvnew);
+
+      return status;
+    }
   }
 
   for (;;) {
