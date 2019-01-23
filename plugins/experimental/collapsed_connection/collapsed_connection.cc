@@ -153,53 +153,9 @@ retry_handler(TSCont contp, TSEvent /* event */, void * /* edata */)
   } else {
     DEBUG_LOG("retry_handler: scheduling retry");
     // std::cerr << "retry_handler: scheduling retry" << std::endl;
-    TSContSchedule(contp, rstate->retry_delay_ms, TS_THREAD_POOL_DEFAULT);
+    TSContSchedule(contp, rstate->retry_delay_ms);
     return TS_EVENT_NONE;
   }
-}
-
-// This fills the cache even if the original group leader aborts.
-int
-client_reader(TSCont contp, TSEvent event, void * /* edata */)
-{
-  // check for connection closed
-  if (TSVConnClosedGet(contp)) {
-    TSContDestroy(contp);
-    return 0;
-  }
-
-  TSVIO const input_vio = TSVConnWriteVIOGet(contp);
-
-  switch (event) {
-  case TS_EVENT_ERROR:
-    DEBUG_LOG("Error event");
-    TSContCall(TSVIOContGet(input_vio), TS_EVENT_ERROR, input_vio);
-    break;
-  case TS_EVENT_VCONN_READ_COMPLETE:
-    DEBUG_LOG("Read complete");
-    break;
-  case TS_EVENT_VCONN_READ_READY:
-  case TS_EVENT_IMMEDIATE:
-    if (TSVIOBufferGet(input_vio)) {
-      TSIOBufferReader const reader = TSVIOReaderGet(input_vio);
-      int64_t const avail           = TSIOBufferReaderAvail(reader);
-      if (0 < avail) {
-        TSIOBufferReaderConsume(reader, avail);
-        TSVIONDoneSet(input_vio, TSVIONDoneGet(input_vio) + avail);
-      }
-
-      if (0 < TSVIONTodoGet(input_vio)) {
-        TSContCall(TSVIOContGet(input_vio), TS_EVENT_VCONN_WRITE_READY, input_vio);
-      } else {
-        TSContCall(TSVIOContGet(input_vio), TS_EVENT_VCONN_WRITE_COMPLETE, input_vio);
-      }
-    }
-    break;
-  default:
-    break;
-  }
-
-  return 0;
 }
 
 void
@@ -282,7 +238,7 @@ main_handler(TSCont contp, TSEvent event, void *edata)
       TSCont const cont_expire = TSContCreate(expire_handler, TSMutexCreate());
       auto const estate        = new ExpireState(rstate, std::move(key_state));
       TSContDataSet(cont_expire, estate);
-      TSContSchedule(cont_expire, rstate->timeout_ms, TS_THREAD_POOL_TASK);
+      TSContSchedule(cont_expire, rstate->timeout_ms);
     } else { // group member
 
       DEBUG_LOG("Creating group member");
@@ -303,7 +259,6 @@ main_handler(TSCont contp, TSEvent event, void *edata)
       TSCont const cont_retry = TSContCreate(retry_handler, TSMutexCreate());
       TSContDataSet(cont_retry, tstate);
       retry_handler(cont_retry, TS_EVENT_NONE, nullptr);
-      //      TSContSchedule(cont_retry, rstate->retry_delay_ms, TS_THREAD_POOL_DEFAULT);
       return TS_EVENT_NONE;
     }
 
@@ -329,7 +284,7 @@ main_handler(TSCont contp, TSEvent event, void *edata)
       auto const tstate = static_cast<TxnState *>(TSContDataGet(contp));
       if (tstate->is_leader) {
         // Defer to parent response
-        TSHttpTxnHookAdd(txnp, TS_HTTP_READ_RESPONSE_HDR_HOOK, contp);
+        TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_RESPONSE_HDR_HOOK, contp);
       }
     } break;
 
@@ -337,7 +292,7 @@ main_handler(TSCont contp, TSEvent event, void *edata)
       auto const tstate = static_cast<TxnState *>(TSContDataGet(contp));
       if (tstate->is_leader) {
         // Defer to parent response
-        TSHttpTxnHookAdd(txnp, TS_HTTP_READ_RESPONSE_HDR_HOOK, contp);
+        TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_RESPONSE_HDR_HOOK, contp);
       } else if (TS_CACHE_LOOKUP_HIT_STALE == status) {
         // Threshold crossed as leader got a FRESH
         TSHttpTxnCacheLookupStatusSet(txnp, TS_CACHE_LOOKUP_HIT_FRESH);
@@ -348,27 +303,7 @@ main_handler(TSCont contp, TSEvent event, void *edata)
     }
   } break;
 
-  // Only leader is allowed to interact with parent
-  case TS_EVENT_HTTP_READ_RESPONSE_HDR: {
-    TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_RESPONSE_HDR_HOOK, contp);
-
-    auto const tstate = static_cast<TxnState *>(TSContDataGet(contp));
-    if (nullptr != tstate) {
-      assert(tstate->is_leader);
-      TSMBuffer buffer = nullptr;
-      TSMLoc hdr_loc   = nullptr;
-
-      // spin off a cache fetcher in case the group leader's client leaves
-      if (TS_SUCCESS == TSHttpTxnServerRespGet(txnp, &buffer, &hdr_loc)) {
-        if (TSHttpTxnIsCacheable(txnp, nullptr, buffer)) {
-          TSHttpTxnHookAdd(txnp, TS_HTTP_RESPONSE_CLIENT_HOOK, TSTransformCreate(client_reader, txnp));
-        }
-        TSHandleMLocRelease(buffer, nullptr, hdr_loc);
-      }
-    }
-  } break;
-
-    // at this point the headers should be cached.
+  // at this point the headers should be cached.
   case TS_EVENT_HTTP_SEND_RESPONSE_HDR: {
     // The parent gave us an answer
     auto const tstate = static_cast<TxnState *>(TSContDataGet(contp));
