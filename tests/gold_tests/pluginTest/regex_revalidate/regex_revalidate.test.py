@@ -203,7 +203,7 @@ tr.TimeOut = 5
 
 # 5 Test - Revalidate path1
 tr = Test.AddTestRun("Revalidate stale path1")
-tr.DelayStart = 5
+tr.DelayStart = 10
 tr.Processes.Default.Command = curl_and_args + ' http://127.0.0.1:{}/path1'.format(ts.Variables.port)
 tr.Processes.Default.ReturnCode = 0
 tr.Processes.Default.Streams.stdout = "gold/regex_reval-stale.gold"
@@ -233,7 +233,7 @@ tr.TimeOut = 5
 
 # 8 Test - Cache hit (path1)
 tr = Test.AddTestRun("Cache hit fresh path1")
-tr.DelayStart = 5
+tr.DelayStart = 10
 tr.Processes.Default.Command = curl_and_args + ' http://127.0.0.1:{}/path1'.format(ts.Variables.port)
 tr.Processes.Default.ReturnCode = 0
 tr.Processes.Default.Streams.stdout = "gold/regex_reval-hit.gold"
@@ -266,7 +266,7 @@ tr.TimeOut = 5
 
 # 11 Test - Cache hit (path2a)
 tr = Test.AddTestRun("Cache hit stale path2a")
-tr.DelayStart = 5
+tr.DelayStart = 10
 tr.Processes.Default.Command = curl_and_args + ' http://127.0.0.1:{}/path2a'.format(ts.Variables.port)
 tr.Processes.Default.ReturnCode = 0
 tr.Processes.Default.Streams.stdout = "gold/regex_reval-stale.gold"
