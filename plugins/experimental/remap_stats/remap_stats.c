@@ -168,7 +168,7 @@ handle_txn_close(TSCont cont, TSEvent event ATS_UNUSED, void *edata)
   int status_code = 0;
   TSMBuffer buf;
   TSMLoc hdr_loc;
-  uint64_t out_bytes, in_bytes;
+  TSMgmtInt out_bytes, in_bytes;
   char *remap, *hostname;
   char *unknown = "unknown";
   char stat_name[MAX_STAT_LENGTH];
@@ -191,17 +191,31 @@ handle_txn_close(TSCont cont, TSEvent event ATS_UNUSED, void *edata)
         remap = unknown;
       }
 
-      in_bytes = TSHttpTxnClientReqHdrBytesGet(txn);
-      in_bytes += TSHttpTxnClientReqBodyBytesGet(txn);
+      int const creqhdrbytes      = TSHttpTxnClientReqHdrBytesGet(txn);
+      int64_t const creqbodybytes = TSHttpTxnClientReqBodyBytesGet(txn);
+
+      if (0 <= creqhdrbytes && 0 <= creqbodybytes) {
+        in_bytes = (TSMgmtInt)creqhdrbytes;
+        in_bytes += (TSMgmtInt)creqbodybytes;
+      } else {
+        in_bytes = 0;
+      }
 
       CREATE_STAT_NAME(stat_name, remap, "in_bytes");
-      stat_add(stat_name, (TSMgmtInt)in_bytes, config->persist_type, config->stat_creation_mutex);
+      stat_add(stat_name, in_bytes, config->persist_type, config->stat_creation_mutex);
 
-      out_bytes = TSHttpTxnClientRespHdrBytesGet(txn);
-      out_bytes += TSHttpTxnClientRespBodyBytesGet(txn);
+      int const cresphdrbytes      = TSHttpTxnClientRespHdrBytesGet(txn);
+      int64_t const crespbodybytes = TSHttpTxnClientRespBodyBytesGet(txn);
+
+      if (0 <= cresphdrbytes && 0 <= crespbodybytes) {
+        out_bytes += (TSMgmtInt)cresphdrbytes;
+        out_bytes += (TSMgmtInt)crespbodybytes;
+      } else {
+        out_bytes = 0;
+      }
 
       CREATE_STAT_NAME(stat_name, remap, "out_bytes");
-      stat_add(stat_name, (TSMgmtInt)out_bytes, config->persist_type, config->stat_creation_mutex);
+      stat_add(stat_name, out_bytes, config->persist_type, config->stat_creation_mutex);
 
       if (TSHttpTxnClientRespGet(txn, &buf, &hdr_loc) == TS_SUCCESS) {
         status_code = (int)TSHttpHdrStatusGet(buf, hdr_loc);
