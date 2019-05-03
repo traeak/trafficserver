@@ -19,21 +19,24 @@
   limitations under the License.
  */
 
-#include "tscore/ink_config.h"
-#include "tscore/ink_defs.h"
-
 #include "ts/ts.h"
+#include "ts/experimental.h"
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
 #include <getopt.h>
 #include <search.h>
+#include <mutex>
+#include <map>
+#include <string>
+#include <string_view>
 
-#define PLUGIN_NAME "remap_stats"
-#define DEBUG_TAG PLUGIN_NAME
+namespace {
 
-#define MAX_STAT_LENGTH (1 << 8)
+constexpr char const * const PLUGIN_NAME = "remap_stats";
+constexpr char const * const  DEBUG_TAG = PLUGIN_NAME;
 
 typedef struct {
   bool post_remap_host;
@@ -42,30 +45,20 @@ typedef struct {
   TSMutex stat_creation_mutex;
 } config_t;
 
-static void
+void
 stat_add(char *name, TSMgmtInt amount, TSStatPersistence persist_type, TSMutex create_mutex)
 {
+	static std::map<std::string, int, std::less<>> stat_cache;
+	static std::mutex cache_mutex;
+
   int stat_id = -1;
-  ENTRY search, *result = NULL;
-  static __thread struct hsearch_data stat_cache;
-  static __thread bool hash_init = false;
+	std::string_view const nv(name);
 
-  if (unlikely(!hash_init)) {
-    // NOLINTNEXTLINE
-    hcreate_r(TS_MAX_API_STATS << 1, &stat_cache);
-    hash_init = true;
-    TSDebug(DEBUG_TAG, "stat cache hash init");
-  }
+	cache_mutex.lock();
+	auto itfind = stat_cache.find(nv);
+	
+	if (stat_cache.end() == itfind) {
 
-  search.key  = name;
-  search.data = 0;
-  // NOLINTNEXTLINE
-  hsearch_r(search, FIND, &result, &stat_cache);
-
-  if (unlikely(result == NULL)) {
-    // This is an unlikely path because we most likely have the stat cached
-    // so this mutex won't be much overhead and it fixes a race condition
-    // in the RecCore. Hopefully this can be removed in the future.
     TSMutexLock(create_mutex);
     if (TS_ERROR == TSStatFindName((const char *)name, &stat_id)) {
       stat_id = TSStatCreate((const char *)name, TS_RECORDDATATYPE_INT, persist_type, TS_STAT_SYNC_SUM);
@@ -77,25 +70,25 @@ stat_add(char *name, TSMgmtInt amount, TSStatPersistence persist_type, TSMutex c
     }
     TSMutexUnlock(create_mutex);
 
-    if (stat_id >= 0) {
-      search.key  = TSstrdup(name);
-      search.data = (void *)((intptr_t)stat_id);
-      // NOLINTNEXTLINE
-      hsearch_r(search, ENTER, &result, &stat_cache);
+    if (0 <= stat_id) {
+			stat_cache.insert(std::make_pair(std::string(nv), stat_id));
       TSDebug(DEBUG_TAG, "Cached stat_name: %s stat_id: %d", name, stat_id);
     }
   } else {
-    stat_id = (int)((intptr_t)result->data);
+    stat_id = itfind->second;
   }
+	
+	cache_mutex.unlock();
 
-  if (likely(stat_id >= 0)) {
+  if (0 <= stat_id) {
     TSStatIntIncrement(stat_id, amount);
   } else {
     TSDebug(DEBUG_TAG, "stat error! stat_name: %s stat_id: %d", name, stat_id);
   }
 }
 
-static char *
+// caller is responsible for the memory
+char *
 get_effective_host(TSHttpTxn txn)
 {
   char *effective_url, *tmp;
@@ -120,8 +113,8 @@ get_effective_host(TSHttpTxn txn)
   return tmp;
 }
 
-static int
-handle_read_req_hdr(TSCont cont, TSEvent event ATS_UNUSED, void *edata)
+int
+handle_read_req_hdr(TSCont cont, TSEvent event, void *edata)
 {
   TSHttpTxn txn = (TSHttpTxn)edata;
   config_t *config;
@@ -136,8 +129,8 @@ handle_read_req_hdr(TSCont cont, TSEvent event ATS_UNUSED, void *edata)
   return 0;
 }
 
-static int
-handle_post_remap(TSCont cont, TSEvent event ATS_UNUSED, void *edata)
+int
+handle_post_remap(TSCont cont, TSEvent event, void *edata)
 {
   TSHttpTxn txn = (TSHttpTxn)edata;
   config_t *config;
@@ -157,10 +150,11 @@ handle_post_remap(TSCont cont, TSEvent event ATS_UNUSED, void *edata)
   return 0;
 }
 
+#define MAX_STAT_LENGTH 8192
 #define CREATE_STAT_NAME(s, h, b) snprintf(s, MAX_STAT_LENGTH, "plugin.%s.%s.%s", PLUGIN_NAME, h, b)
 
-static int
-handle_txn_close(TSCont cont, TSEvent event ATS_UNUSED, void *edata)
+int
+handle_txn_close(TSCont cont, TSEvent event, void *edata)
 {
   TSHttpTxn txn = (TSHttpTxn)edata;
   config_t *config;
@@ -169,8 +163,9 @@ handle_txn_close(TSCont cont, TSEvent event ATS_UNUSED, void *edata)
   TSMBuffer buf;
   TSMLoc hdr_loc;
   TSMgmtInt out_bytes, in_bytes;
-  char *remap, *hostname;
-  char *unknown = "unknown";
+  char const *remap;
+	char *hostname;
+  static char const * const unknown = "unknown";
   char stat_name[MAX_STAT_LENGTH];
 
   config = (config_t *)TSContDataGet(cont);
@@ -208,7 +203,7 @@ handle_txn_close(TSCont cont, TSEvent event ATS_UNUSED, void *edata)
       int64_t const crespbodybytes = TSHttpTxnClientRespBodyBytesGet(txn);
 
       if (0 <= cresphdrbytes && 0 <= crespbodybytes) {
-        out_bytes += (TSMgmtInt)cresphdrbytes;
+        out_bytes = (TSMgmtInt)cresphdrbytes;
         out_bytes += (TSMgmtInt)crespbodybytes;
       } else {
         out_bytes = 0;
@@ -242,7 +237,7 @@ handle_txn_close(TSCont cont, TSEvent event ATS_UNUSED, void *edata)
       }
 
       if (remap != unknown) {
-        TSfree(remap);
+        TSfree((char*)remap);
       }
     } else if (hostname) {
       TSfree(hostname);
@@ -253,6 +248,8 @@ handle_txn_close(TSCont cont, TSEvent event ATS_UNUSED, void *edata)
   TSDebug(DEBUG_TAG, "Handler Finished");
   return 0;
 }
+
+} // namespace
 
 void
 TSPluginInit(int argc, const char *argv[])
@@ -273,7 +270,7 @@ TSPluginInit(int argc, const char *argv[])
     TSDebug(DEBUG_TAG, "Plugin registration succeeded");
   }
 
-  config                      = TSmalloc(sizeof(config_t));
+  config                      = (config_t*)TSmalloc(sizeof(config_t));
   config->post_remap_host     = false;
   config->persist_type        = TS_STAT_NON_PERSISTENT;
   config->stat_creation_mutex = TSMutexCreate();
