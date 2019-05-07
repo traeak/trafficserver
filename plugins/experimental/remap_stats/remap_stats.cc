@@ -33,10 +33,10 @@
 #include <string>
 #include <string_view>
 
-namespace {
-
-constexpr char const * const PLUGIN_NAME = "remap_stats";
-constexpr char const * const  DEBUG_TAG = PLUGIN_NAME;
+namespace
+{
+constexpr char const *const PLUGIN_NAME = "remap_stats";
+constexpr char const *const DEBUG_TAG   = PLUGIN_NAME;
 
 typedef struct {
   bool post_remap_host;
@@ -48,17 +48,17 @@ typedef struct {
 void
 stat_add(char *name, TSMgmtInt amount, TSStatPersistence persist_type, TSMutex create_mutex)
 {
-	static std::map<std::string, int, std::less<>> stat_cache;
-	static std::mutex cache_mutex;
+  static std::map<std::string, int, std::less<>> stat_cache;
+  static std::mutex cache_mutex;
 
   int stat_id = -1;
-	std::string_view const nv(name);
+  std::string_view const nv(name);
 
-	cache_mutex.lock();
-	auto itfind = stat_cache.find(nv);
-	
-	if (stat_cache.end() == itfind) {
+  cache_mutex.lock();
 
+  auto const itfind = stat_cache.find(nv);
+
+  if (stat_cache.end() == itfind) {
     TSMutexLock(create_mutex);
     if (TS_ERROR == TSStatFindName((const char *)name, &stat_id)) {
       stat_id = TSStatCreate((const char *)name, TS_RECORDDATATYPE_INT, persist_type, TS_STAT_SYNC_SUM);
@@ -71,14 +71,14 @@ stat_add(char *name, TSMgmtInt amount, TSStatPersistence persist_type, TSMutex c
     TSMutexUnlock(create_mutex);
 
     if (0 <= stat_id) {
-			stat_cache.insert(std::make_pair(std::string(nv), stat_id));
+      stat_cache.insert(std::make_pair(std::string(nv), stat_id));
       TSDebug(DEBUG_TAG, "Cached stat_name: %s stat_id: %d", name, stat_id);
     }
   } else {
     stat_id = itfind->second;
   }
-	
-	cache_mutex.unlock();
+
+  cache_mutex.unlock();
 
   if (0 <= stat_id) {
     TSStatIntIncrement(stat_id, amount);
@@ -150,8 +150,13 @@ handle_post_remap(TSCont cont, TSEvent event, void *edata)
   return 0;
 }
 
-#define MAX_STAT_LENGTH 8192
-#define CREATE_STAT_NAME(s, h, b) snprintf(s, MAX_STAT_LENGTH, "plugin.%s.%s.%s", PLUGIN_NAME, h, b)
+constexpr size_t const MAX_STAT_LENGTH = 8192;
+
+void
+create_stat_name(char *const buf, char const *const remap, char const *const parm)
+{
+  snprintf(buf, MAX_STAT_LENGTH, "plugin.%s.%s.%s", PLUGIN_NAME, remap, parm);
+}
 
 int
 handle_txn_close(TSCont cont, TSEvent event, void *edata)
@@ -164,8 +169,8 @@ handle_txn_close(TSCont cont, TSEvent event, void *edata)
   TSMLoc hdr_loc;
   TSMgmtInt out_bytes, in_bytes;
   char const *remap;
-	char *hostname;
-  static char const * const unknown = "unknown";
+  char *hostname;
+  static char const *const unknown = "unknown";
   char stat_name[MAX_STAT_LENGTH];
 
   config = (config_t *)TSContDataGet(cont);
@@ -196,7 +201,7 @@ handle_txn_close(TSCont cont, TSEvent event, void *edata)
         in_bytes = 0;
       }
 
-      CREATE_STAT_NAME(stat_name, remap, "in_bytes");
+      create_stat_name(stat_name, remap, "in_bytes");
       stat_add(stat_name, in_bytes, config->persist_type, config->stat_creation_mutex);
 
       int const cresphdrbytes      = TSHttpTxnClientRespHdrBytesGet(txn);
@@ -209,7 +214,7 @@ handle_txn_close(TSCont cont, TSEvent event, void *edata)
         out_bytes = 0;
       }
 
-      CREATE_STAT_NAME(stat_name, remap, "out_bytes");
+      create_stat_name(stat_name, remap, "out_bytes");
       stat_add(stat_name, out_bytes, config->persist_type, config->stat_creation_mutex);
 
       if (TSHttpTxnClientRespGet(txn, &buf, &hdr_loc) == TS_SUCCESS) {
@@ -217,27 +222,27 @@ handle_txn_close(TSCont cont, TSEvent event, void *edata)
         TSHandleMLocRelease(buf, TS_NULL_MLOC, hdr_loc);
 
         if (status_code < 200) {
-          CREATE_STAT_NAME(stat_name, remap, "status_other");
+          create_stat_name(stat_name, remap, "status_other");
         } else if (status_code <= 299) {
-          CREATE_STAT_NAME(stat_name, remap, "status_2xx");
+          create_stat_name(stat_name, remap, "status_2xx");
         } else if (status_code <= 399) {
-          CREATE_STAT_NAME(stat_name, remap, "status_3xx");
+          create_stat_name(stat_name, remap, "status_3xx");
         } else if (status_code <= 499) {
-          CREATE_STAT_NAME(stat_name, remap, "status_4xx");
+          create_stat_name(stat_name, remap, "status_4xx");
         } else if (status_code <= 599) {
-          CREATE_STAT_NAME(stat_name, remap, "status_5xx");
+          create_stat_name(stat_name, remap, "status_5xx");
         } else {
-          CREATE_STAT_NAME(stat_name, remap, "status_other");
+          create_stat_name(stat_name, remap, "status_other");
         }
 
         stat_add(stat_name, 1, config->persist_type, config->stat_creation_mutex);
       } else {
-        CREATE_STAT_NAME(stat_name, remap, "status_unknown");
+        create_stat_name(stat_name, remap, "status_unknown");
         stat_add(stat_name, 1, config->persist_type, config->stat_creation_mutex);
       }
 
       if (remap != unknown) {
-        TSfree((char*)remap);
+        TSfree((char *)remap);
       }
     } else if (hostname) {
       TSfree(hostname);
@@ -270,7 +275,7 @@ TSPluginInit(int argc, const char *argv[])
     TSDebug(DEBUG_TAG, "Plugin registration succeeded");
   }
 
-  config                      = (config_t*)TSmalloc(sizeof(config_t));
+  config                      = (config_t *)TSmalloc(sizeof(config_t));
   config->post_remap_host     = false;
   config->persist_type        = TS_STAT_NON_PERSISTENT;
   config->stat_creation_mutex = TSMutexCreate();
