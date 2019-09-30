@@ -165,11 +165,11 @@ TSRemapNewInstance(int argc, char *argv[], void **ih, char *errbuf, int errbuf_s
       return TS_ERROR;
     }
     if (strncmp(line, "key", 3) == 0) {
-      if (strncmp((char *)(line + 3), "0", 1) == 0) {
+      if (strncmp(line + 3, "0", 1) == 0) {
         keynum = 0;
       } else {
         TSDebug(PLUGIN_NAME, ">>> %s <<<", line + 3);
-        keynum = atoi((char *)(line + 3));
+        keynum = atoi(line + 3);
         if (keynum == 0) {
           keynum = -1; // Not a Number
         }
@@ -331,13 +331,17 @@ getAppQueryString(const char *query_string, int query_length)
 }
 
 static char *
-urlParse(char *url, char *anchor, char *new_path_seg, int new_path_seg_len, char *signed_seg, unsigned int signed_seg_len)
+urlParse(char const *const url_in, char *anchor, char *new_path_seg, int new_path_seg_len, char *signed_seg,
+         unsigned int signed_seg_len)
 {
   char *segment[MAX_SEGMENTS];
+  char url[8192]                     = {'\0'};
   unsigned char decoded_string[2048] = {'\0'};
   char new_url[8192]                 = {'\0'};
   char *p = NULL, *sig_anchor = NULL, *saveptr = NULL;
   int i = 0, numtoks = 0, cp_len = 0, l, decoded_len = 0, sig_anchor_seg = 0;
+
+  strncat(url, url_in, sizeof(url) - strlen(url) - 1);
 
   char *skip = strchr(url, ':');
   if (!skip || skip[1] != '/' || skip[2] != '/') {
@@ -527,19 +531,25 @@ TSRemapDoRemap(void *ih, TSHttpTxn txnp, TSRemapRequestInfo *rri)
   // check for path params.
   if (query == NULL || strstr(query, "E=") == NULL) {
     char *const parsed = urlParse(url, cfg->sig_anchor, new_path, 8192, path_params, 8192);
-    if (NULL == parsed) {
-      err_log(url, "Has no signing query string or signing path parameters.");
+    if (parsed == NULL) {
+      err_log(url, "Unable to parse/decode new url path parameters");
       goto deny;
     }
 
-    url             = parsed;
     has_path_params = true;
-    query           = strstr(url, ";");
+    query           = strstr(parsed, ";");
 
     if (query == NULL) {
       err_log(url, "Has no signing query string or signing path parameters.");
+      TSfree(parsed);
       goto deny;
     }
+
+    if (url != current_url) {
+      TSfree(url);
+    }
+
+    url = parsed;
   }
 
   /* first, parse the query string */
