@@ -16,50 +16,21 @@
   limitations under the License.
  */
 
-#include "Data.h"
+#pragma once
 
-#include <cassert>
-#include <chrono>
-#include <iostream>
-#include <mutex>
-#include <thread>
+#include "ts/ts.h"
 
-namespace
-{
-std::mutex mutex;
-int64_t inplay = 0;
-std::unique_ptr<std::thread> thread;
-} // namespace
+struct Data;
 
-void
-monitor()
-{
-  std::lock_guard<std::mutex> guard(mutex);
-  //	while (0 < inplay)
-  while (true) {
-    mutex.unlock();
-    std::this_thread::sleep_for(std::chrono::seconds(10));
-    std::cerr << "Inplay: " << inplay << std::endl;
-    mutex.lock();
-  }
-  //	thread.release();
-}
+/** Functions to deal with the connection to the client.
+ * Body content transfers are handled by the client.
+ * New block requests are also initiated by the client.
+ */
 
-void
-incrData()
-{
-  std::lock_guard<std::mutex> const guard(mutex);
-  if (!thread) {
-    thread.reset(new std::thread(monitor));
-  }
+void shutdown(TSCont const contp, Data *const data);
 
-  ++inplay;
-}
+void abort(TSCont const contp, Data *const data);
 
-void
-decrData()
-{
-  std::lock_guard<std::mutex> const guard(mutex);
-  --inplay;
-  assert(0 <= inplay);
-}
+bool request_block(TSCont contp, Data *const data);
+
+bool reader_avail_more_than(TSIOBufferReader const reader, int64_t bytes);
