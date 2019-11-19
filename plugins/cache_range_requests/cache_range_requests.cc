@@ -76,8 +76,8 @@ create_pluginconfig(int argc, char *const argv[])
   }
 
   static const struct option longopts[] = {
-    {const_cast<char *>("change_parentselect"), no_argument, nullptr, 'p'},
-    {const_cast<char *>("consider_ims"), no_argument, nullptr, 'i'},
+    {const_cast<char *>("ps-cachekey"), no_argument, nullptr, 'p'},
+    {const_cast<char *>("consider-ims"), no_argument, nullptr, 'c'},
     {nullptr, 0, nullptr, 0},
   };
 
@@ -96,7 +96,7 @@ create_pluginconfig(int argc, char *const argv[])
         DEBUG_LOG("Plugin modifies parent selection key");
         pc->ps_mode = PS_CACHEKEY_URL;
       } break;
-      case 'i': {
+      case 'c': {
         DEBUG_LOG("Plugin considers the '%.*s' header", (int)X_IMS_HEADER.size(), X_IMS_HEADER.data());
         pc->consider_ims_header = true;
       } break;
