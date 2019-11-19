@@ -75,3 +75,7 @@ X-IMS header support
 
       <from-url> <to-url> @plugin=cache_range_requests.so @pparam=--consider-ims
       <from-url> <to-url> @plugin=cache_range_requests.so @pparam=-c
+
+    Considering using the header_rewrite plugin to protect the parent
+		from using this option as an attack vector against an origin.
+		
