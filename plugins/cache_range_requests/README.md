@@ -48,7 +48,7 @@ Parent Selection Mode (consistent-hash only):
       <from-url> <to-url> @plugin=cache_range_requests.so @pparam=--ps-cachekey
       <from-url> <to-url> @plugin=cache_range_requests.so @pparam=-p
 
-X-IMS header support
+X-CRR-IMS header support
 
     To support slice plugin self healing an option to force
     revalidation after cache lookup complete was added.  This option
@@ -56,11 +56,11 @@ X-IMS header support
 
     This optional header looks like:
 
-    X-IMS: Tue, 19 Nov 2019 13:26:45 GMT
+    X-CRR-IMS: Tue, 19 Nov 2019 13:26:45 GMT
 
 		If the cache lookup was a cache hit and the cache header date
 		is *less* than this header value then the cache state is switched
-		from FRESH to STALE which will result in a If-Modified-Since or
+		from FRESH to STALE which results in If-Modified-Since or
 		If-Match request being passed to the parent.
 
 		In order for this option to be enabled the the following parameter
@@ -78,4 +78,3 @@ X-IMS header support
 
     Considering using the header_rewrite plugin to protect the parent
 		from using this option as an attack vector against an origin.
-		

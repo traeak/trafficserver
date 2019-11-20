@@ -39,26 +39,26 @@
 #define DEBUG_LOG(fmt, ...) TSDebug(PLUGIN_NAME, "[%s:%d] %s(): " fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
 #define ERROR_LOG(fmt, ...) TSError("[%s:%d] %s(): " fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
 
-namespace {
-
+namespace
+{
 typedef enum parent_select_mode {
   PS_DEFAULT,      // Default ATS parent selection mode
   PS_CACHEKEY_URL, // Set parent selection url to cache_key url
 } parent_select_mode_t;
 
 struct pluginconfig {
-  parent_select_mode_t ps_mode { PS_DEFAULT };
-  bool consider_ims_header { false };
+  parent_select_mode_t ps_mode{PS_DEFAULT};
+  bool consider_ims_header{false};
 };
 
 struct txndata {
   std::string range_value;
-  time_t ims_time { 0 };
+  time_t ims_time{0};
 };
 
 // pluginconfig struct (global plugin only)
-pluginconfig *gPluginConfig = { nullptr };
-constexpr std::string_view X_IMS_HEADER = { "X-IMS" };
+pluginconfig *gPluginConfig             = {nullptr};
+constexpr std::string_view X_IMS_HEADER = {"X-CRR-IMS"};
 
 /**
  * Creates pluginconfig data structure
@@ -68,7 +68,12 @@ constexpr std::string_view X_IMS_HEADER = { "X-IMS" };
 pluginconfig *
 create_pluginconfig(int argc, char *const argv[])
 {
-  pluginconfig * const pc = new pluginconfig;
+  DEBUG_LOG("Number of arguments: %d", argc);
+  for (int index = 0; index < argc; ++index) {
+    DEBUG_LOG("args[%d] = %s", index, argv[index]);
+  }
+
+  pluginconfig *const pc = new pluginconfig;
 
   if (nullptr == pc) {
     ERROR_LOG("Can't allocate pluginconfig");
@@ -81,9 +86,9 @@ create_pluginconfig(int argc, char *const argv[])
     {nullptr, 0, nullptr, 0},
   };
 
-  /* argv contains the "to" and "from" URLs. Skip the first so that the second one poses as the program name. */  
-  --argc;
-  ++argv;
+  // getopt assumes args start at '1'
+  ++argc;
+  --argv;
 
   for (;;) {
     int const opt = getopt_long(argc, argv, "", longopts, nullptr);
@@ -92,16 +97,16 @@ create_pluginconfig(int argc, char *const argv[])
     }
 
     switch (opt) {
-      case 'p': {
-        DEBUG_LOG("Plugin modifies parent selection key");
-        pc->ps_mode = PS_CACHEKEY_URL;
-      } break;
-      case 'c': {
-        DEBUG_LOG("Plugin considers the '%.*s' header", (int)X_IMS_HEADER.size(), X_IMS_HEADER.data());
-        pc->consider_ims_header = true;
-      } break;
-      default: {
-      } break;
+    case 'p': {
+      DEBUG_LOG("Plugin modifies parent selection key");
+      pc->ps_mode = PS_CACHEKEY_URL;
+    } break;
+    case 'c': {
+      DEBUG_LOG("Plugin considers the '%.*s' header", (int)X_IMS_HEADER.size(), X_IMS_HEADER.data());
+      pc->consider_ims_header = true;
+    } break;
+    default: {
+    } break;
     }
   }
 
@@ -135,7 +140,7 @@ void
 handle_server_read_response(TSHttpTxn txnp, txndata *const txn_state)
 {
   TSMBuffer resp_buf = nullptr;
-  TSMLoc resp_loc = nullptr;
+  TSMLoc resp_loc    = nullptr;
   TSHttpStatus status;
 
   if (TS_SUCCESS == TSHttpTxnServerRespGet(txnp, &resp_buf, &resp_loc)) {
@@ -217,9 +222,9 @@ handle_send_origin_request(TSCont contp, TSHttpTxn txnp, txndata *const txn_stat
   TSMBuffer hdr_buf;
   TSMLoc hdr_loc = nullptr;
 
-  std::string const & rv = txn_state->range_value;
+  std::string const &rv = txn_state->range_value;
 
-  if (TS_SUCCESS == TSHttpTxnServerReqGet(txnp, &hdr_buf, &hdr_loc) && ! rv.empty()) {
+  if (TS_SUCCESS == TSHttpTxnServerReqGet(txnp, &hdr_buf, &hdr_loc) && !rv.empty()) {
     if (set_header(hdr_buf, hdr_loc, TS_MIME_FIELD_RANGE, TS_MIME_LEN_RANGE, rv.data(), rv.length())) {
       DEBUG_LOG("Added range header: %s", rv.c_str());
       TSHttpTxnHookAdd(txnp, TS_HTTP_READ_RESPONSE_HDR_HOOK, contp);
@@ -239,9 +244,9 @@ handle_client_send_response(TSHttpTxn txnp, txndata *const txn_state)
   char *p;
   int length;
   TSMBuffer resp_buf = nullptr;
-  TSMBuffer req_buf = nullptr;
-  TSMLoc resp_loc = nullptr;
-  TSMLoc req_loc = nullptr;
+  TSMBuffer req_buf  = nullptr;
+  TSMLoc resp_loc    = nullptr;
+  TSMLoc req_loc     = nullptr;
 
   TSReturnCode result = TSHttpTxnClientRespGet(txnp, &resp_buf, &resp_loc);
   DEBUG_LOG("result: %d", result);
@@ -260,9 +265,9 @@ handle_client_send_response(TSHttpTxn txnp, txndata *const txn_state)
       DEBUG_LOG("Set response header to TS_HTTP_STATUS_PARTIAL_CONTENT.");
     }
   }
-  std::string const & rv = txn_state->range_value;
+  std::string const &rv = txn_state->range_value;
   // add the range request header back in so that range requests may be logged.
-  if (TS_SUCCESS == TSHttpTxnClientReqGet(txnp, &req_buf, &req_loc) && ! rv.empty()) {
+  if (TS_SUCCESS == TSHttpTxnClientReqGet(txnp, &req_buf, &req_loc) && !rv.empty()) {
     if (set_header(req_buf, req_loc, TS_MIME_FIELD_RANGE, TS_MIME_LEN_RANGE, rv.data(), rv.length())) {
       DEBUG_LOG("added range header: %s", rv.c_str());
     } else {
@@ -300,23 +305,23 @@ get_date_from_cached_hdr(TSHttpTxn txn)
 void
 handle_cache_lookup_complete(TSHttpTxn txnp, txndata *const txn_state)
 {
-	int cachestat;
-	if (TS_SUCCESS == TSHttpTxnCacheLookupStatusGet(txnp, &cachestat)) {
-		if (TS_CACHE_LOOKUP_HIT_FRESH == cachestat) {
-			time_t const ctime = get_date_from_cached_hdr(txnp);
-			if (ctime < txn_state->ims_time) {
-				TSHttpTxnCacheLookupStatusSet(txnp, TS_CACHE_LOOKUP_HIT_STALE);
-				if (TSIsDebugTagSet(PLUGIN_NAME)) {
-					int url_len = 0;
-          char * const req_url = TSHttpTxnEffectiveUrlStringGet(txnp, &url_len);
-          std::string const & rv  = txn_state->range_value;
-					DEBUG_LOG("Forced revalidate %.*s-%s", url_len, req_url, rv.c_str());
+  int cachestat;
+  if (TS_SUCCESS == TSHttpTxnCacheLookupStatusGet(txnp, &cachestat)) {
+    if (TS_CACHE_LOOKUP_HIT_FRESH == cachestat) {
+      time_t const ctime = get_date_from_cached_hdr(txnp);
+      if (ctime < txn_state->ims_time) {
+        TSHttpTxnCacheLookupStatusSet(txnp, TS_CACHE_LOOKUP_HIT_STALE);
+        if (TSIsDebugTagSet(PLUGIN_NAME)) {
+          int url_len           = 0;
+          char *const req_url   = TSHttpTxnEffectiveUrlStringGet(txnp, &url_len);
+          std::string const &rv = txn_state->range_value;
+          DEBUG_LOG("Forced revalidate %.*s-%s", url_len, req_url, rv.c_str());
 
-					TSfree(req_url);
-				}
-			}
-		}
-	}
+          TSfree(req_url);
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -325,7 +330,7 @@ handle_cache_lookup_complete(TSHttpTxn txnp, txndata *const txn_state)
 int
 transaction_handler(TSCont contp, TSEvent event, void *edata)
 {
-  TSHttpTxn txnp     = static_cast<TSHttpTxn>(edata);
+  TSHttpTxn txnp           = static_cast<TSHttpTxn>(edata);
   txndata *const txn_state = static_cast<txndata *>(TSContDataGet(contp));
 
   switch (event) {
@@ -399,7 +404,7 @@ range_header_check(TSHttpTxn txnp, pluginconfig *const pc)
   txndata *txn_state;
   TSMBuffer hdr_buf;
   TSMLoc hdr_loc = nullptr;
-  TSMLoc loc      = nullptr;
+  TSMLoc loc     = nullptr;
   TSCont txn_contp;
 
   if (TS_SUCCESS == TSHttpTxnClientReqGet(txnp, &hdr_buf, &hdr_loc)) {
@@ -414,8 +419,8 @@ range_header_check(TSHttpTxn txnp, pluginconfig *const pc)
         if (nullptr == (txn_contp = TSContCreate(static_cast<TSEventFunc>(transaction_handler), nullptr))) {
           ERROR_LOG("failed to create the transaction handler continuation.");
         } else {
-          txn_state         = new txndata;
-          std::string & rv  = txn_state->range_value;
+          txn_state       = new txndata;
+          std::string &rv = txn_state->range_value;
           rv.assign(hdr_value, length);
           DEBUG_LOG("length: %d, txn_state->range_value: %s", length, rv.c_str());
           req_url              = TSHttpTxnEffectiveUrlStringGet(txnp, &url_length);
@@ -431,7 +436,6 @@ range_header_check(TSHttpTxn txnp, pluginconfig *const pc)
           }
 
           if (nullptr != pc) {
-
             // Optionally set the parent_selection_url to the cache_key url or path
             if (PS_DEFAULT != pc->ps_mode) {
               TSMLoc ps_loc = nullptr;
@@ -448,7 +452,7 @@ range_header_check(TSHttpTxn txnp, pluginconfig *const pc)
               }
             }
 
-            // optionally consider an X-IMS header
+            // optionally consider an X-CRR-IMS header
             if (pc->consider_ims_header) {
               TSMLoc const imsloc = TSMimeHdrFieldFind(hdr_buf, hdr_loc, X_IMS_HEADER.data(), X_IMS_HEADER.size());
               if (TS_NULL_MLOC != imsloc) {
@@ -479,7 +483,7 @@ range_header_check(TSHttpTxn txnp, pluginconfig *const pc)
           DEBUG_LOG("Also Added TS_HTTP_CACHE_LOOKUP_COMPLETE_HOOK");
         }
       }
-      //TSHandleMLocRelease(hdr_buf, hdr_loc, loc);
+      // TSHandleMLocRelease(hdr_buf, hdr_loc, loc);
     } else {
       DEBUG_LOG("no range request header.");
     }
@@ -538,11 +542,11 @@ TSRemapNewInstance(int argc, char *argv[], void **ih, char * /*errbuf */, int /*
   }
 
   // Skip over the Remap params
-  char *const * plugin_argv = const_cast<char *const *>(argv + 2);
+  char *const *plugin_argv = const_cast<char *const *>(argv + 2);
   argc -= 2;
 
   // Parse the argument list.
-  *ih = static_cast<void*>(create_pluginconfig(argc, plugin_argv));
+  *ih = static_cast<void *>(create_pluginconfig(argc, plugin_argv));
 
   if (*ih == nullptr) {
     ERROR_LOG("Can't create pluginconfig");
