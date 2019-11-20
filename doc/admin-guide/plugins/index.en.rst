@@ -50,6 +50,7 @@ Plugins that are considered stable are installed by default in |TS| releases.
    Background Fetch <background_fetch.en>
    Cache Key Manipulation <cachekey.en>
    Cache Promotion Policies <cache_promote.en>
+   Cache Range Requests <cache_range_requests.en>
    Combo Handler <combo_handler.en>
    Configuration Remap <conf_remap.en>
    ESI <esi.en>
@@ -62,7 +63,6 @@ Plugins that are considered stable are installed by default in |TS| releases.
    Regex Remap <regex_remap.en>
    Regex Revalidate <regex_revalidate.en>
    Remap Purge <remap_purge.en>
-   Slice <slice.en>
    Stats over HTTP <stats_over_http.en>
    TCPInfo <tcpinfo.en>
    XDebug <xdebug.en>
@@ -81,6 +81,9 @@ Plugins that are considered stable are installed by default in |TS| releases.
 
 :doc:`Cache Promotion Policies <cache_promote.en>`
    Allows for control over which assets should be written to cache, or not.
+
+:doc:`Cache Range Requests <cache_range_requests.en>`
+   Cache ranges by adding the range request header to the cache key.
 
 :doc:`Combo Handler <combo_handler.en>`
    Provides an intelligent way to combine multiple URLs into a single URL, and have Apache Traffic Server combine the components into one response.
