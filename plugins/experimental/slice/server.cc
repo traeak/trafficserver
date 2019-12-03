@@ -386,7 +386,7 @@ handle_server_resp(TSCont contp, TSEvent event, Data *const data)
 
       // kill the upstream and allow dnstream to clean up
       if (!headerStat) {
-        data->m_upstream.close();
+        data->m_upstream.abort();
         data->m_blockstate = Data::BlockState::Fail;
         if (data->m_dnstream.m_write.isOpen()) {
           TSVIOReenable(data->m_dnstream.m_write.m_vio);
@@ -460,11 +460,6 @@ handle_server_resp(TSCont contp, TSEvent event, Data *const data)
         shutdown(contp, data);
       }
     }
-  } break;
-  case TS_EVENT_ERROR: {
-    DEBUG_LOG("%p handle_server_resp: TS_EVENT_ERROR", data);
-    data->m_blockstate = Data::BlockState::Fail;
-    data->m_upstream.close();
   } break;
   default: {
     DEBUG_LOG("%p handle_server_resp uhandled event: %s", data, TSHttpEventNameLookup(event));

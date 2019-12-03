@@ -49,10 +49,9 @@ intercept_hook(TSCont contp, TSEvent event, void *edata)
   case TS_EVENT_NET_ACCEPT_FAILED:
   case TS_EVENT_VCONN_INACTIVITY_TIMEOUT:
   case TS_EVENT_VCONN_ACTIVE_TIMEOUT:
-    TSContDataSet(contp, nullptr);
-    TSContDestroy(contp);
-    delete data;
-    break;
+  case TS_EVENT_ERROR: {
+    abort(contp, data);
+  } break;
 
   default: {
     // data from client -- only the initial header
@@ -78,15 +77,8 @@ intercept_hook(TSCont contp, TSEvent event, void *edata)
       handle_client_resp(contp, event, data);
     } else {
       ERROR_LOG("Unhandled event: %d", event);
-      // fprintf(stderr, "intercept_hook unhandled event: %s\n", TSHttpEventNameLookup(event));
-
-      /*
-      std::cerr << __func__
-              << ": events received after intercept state torn down"
-              << std::endl;
-      */
     }
-  }
+  } break;
   }
 
   return TS_EVENT_CONTINUE;
