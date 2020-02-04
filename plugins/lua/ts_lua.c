@@ -33,7 +33,7 @@ static ts_lua_main_ctx *ts_lua_g_main_ctx_array = NULL;
 
 static char const *const ts_lua_mgmt_state_str = "proxy.config.plugin.lua.max_states";
 
-/* this is set the first time global configuration is probed. */
+// this is set the first time global configuration is probed.
 static int ts_lua_max_state_count = 0;
 
 ts_lua_main_ctx *
@@ -43,21 +43,62 @@ create_lua_vms()
 
   if (0 == ts_lua_max_state_count) {
     TSMgmtInt mgmt_state = 0;
-
-    if (TS_SUCCESS != TSMgmtIntGet(ts_lua_mgmt_state_str, &mgmt_state)) {
-      TSDebug(TS_LUA_DEBUG_TAG, "[%s] setting max state to default: %d", __FUNCTION__, TS_LUA_MAX_STATE_COUNT);
-      ts_lua_max_state_count = TS_LUA_MAX_STATE_COUNT;
-    } else {
+    if (TS_SUCCESS == TSMgmtIntGet(ts_lua_mgmt_state_str, &mgmt_state)) {
       ts_lua_max_state_count = (int)mgmt_state;
-      TSDebug(TS_LUA_DEBUG_TAG, "[%s] found %s: [%d]", __FUNCTION__, ts_lua_mgmt_state_str, (int)ts_lua_max_state_count);
+      TSDebug(TS_LUA_DEBUG_TAG, "[%s] max_states found %s: [%d]", __FUNCTION__, ts_lua_mgmt_state_str, (int)ts_lua_max_state_count);
 
-      if (ts_lua_max_state_count < 1) {
-        TSError("[ts_lua][%s] invalid %s: %d", __FUNCTION__, ts_lua_mgmt_state_str, ts_lua_max_state_count);
-        ts_lua_max_state_count = 0;
-        return NULL;
+    } else {
+      if (TS_SUCCESS == TSMgmtIntCreate(TS_RECORDTYPE_CONFIG, ts_lua_mgmt_state_str, TS_LUA_MAX_STATE_COUNT,
+                                        TS_RECORDUPDATE_RESTART_TS, TS_RECORDCHECK_INT, "^[1-9][0-9]*",
+                                        TS_RECORDACCESS_READ_ONLY)) {
+        TSDebug(TS_LUA_DEBUG_TAG, "[%s] creating max_states with default: %d", __FUNCTION__, TS_LUA_MAX_STATE_COUNT);
+        ts_lua_max_state_count = TS_LUA_MAX_STATE_COUNT;
       }
     }
+
+    // check if the configured values are valid
+    if (ts_lua_max_state_count < 1) {
+      TSError("[ts_lua][%s] invalid %s: %d", __FUNCTION__, ts_lua_mgmt_state_str, ts_lua_max_state_count);
+      ts_lua_max_state_count = 0;
+      return NULL;
+    }
   }
+
+  /*
+    if (0 == ts_lua_max_state_count) {
+                  if ( TS_SUCCESS == TSMgmtIntCreate(
+                                  TS_RECORDTYPE_CONFIG,
+                                  ts_lua_mgmt_state_str,
+                                  TS_LUA_MAX_STATE_COUNT,
+                                  TS_RECORDUPDATE_RESTART_TS,
+                                  TS_RECORDCHECK_INT,
+                                  "^[1-9][0-9]*",
+                                  TS_RECORDACCESS_READ_ONLY) ) {
+        TSDebug(TS_LUA_DEBUG_TAG, "[%s] setting max state to default: %d", __FUNCTION__, TS_LUA_MAX_STATE_COUNT);
+                          ts_lua_max_state_count = TS_LUA_MAX_STATE_COUNT;
+
+                  } else {
+          TSMgmtInt mgmt_state = 0;
+
+          if (TS_SUCCESS != TSMgmtIntGet(ts_lua_mgmt_state_str, &mgmt_state)) {
+
+
+          TSDebug(TS_LUA_DEBUG_TAG, "[%s] setting max state to default: %d", __FUNCTION__, TS_LUA_MAX_STATE_COUNT);
+          ts_lua_max_state_count = TS_LUA_MAX_STATE_COUNT;
+
+          } else {
+          ts_lua_max_state_count = (int)mgmt_state;
+          TSDebug(TS_LUA_DEBUG_TAG, "[%s] found %s: [%d]", __FUNCTION__, ts_lua_mgmt_state_str, (int)ts_lua_max_state_count);
+
+          if (ts_lua_max_state_count < 1) {
+                  TSError("[ts_lua][%s] invalid %s: %d", __FUNCTION__, ts_lua_mgmt_state_str, ts_lua_max_state_count);
+                  ts_lua_max_state_count = 0;
+                  return NULL;
+                                  }
+        }
+      }
+          }
+  */
 
   ctx_array = TSmalloc(sizeof(ts_lua_main_ctx) * ts_lua_max_state_count);
   memset(ctx_array, 0, sizeof(ts_lua_main_ctx) * ts_lua_max_state_count);
