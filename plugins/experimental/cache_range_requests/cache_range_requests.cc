@@ -29,6 +29,7 @@
 #include "ts/ts.h"
 #include "ts/remap.h"
 
+#include <cinttypes>
 #include <cstdio>
 #include <cstring>
 #include <getopt.h>
@@ -61,6 +62,8 @@ static bool set_header(TSMBuffer, TSMLoc, const char *, int, const char *, int);
 static int transaction_handler(TSCont, TSEvent, void *);
 static struct pluginconfig *create_pluginconfig(int argc, char *const argv[]);
 static void delete_pluginconfig(struct pluginconfig *);
+// Header for optional revalidation
+constexpr std::string_view X_IMS_HEADER = {"X-Crr-Ims"};
 
 // pluginconfig struct (global plugin only)
 static struct pluginconfig *gPluginConfig = nullptr;
@@ -213,7 +216,20 @@ range_header_check(TSHttpTxn txnp, struct pluginconfig *pc)
                     TS_PARSE_DONE == TSUrlParse(hdr_bufp, ps_loc, &start, end) && // This should always succeed.
                     TS_SUCCESS == TSHttpTxnParentSelectionUrlSet(txnp, hdr_bufp, ps_loc)) {
                   DEBUG_LOG("Set Parent Selection URL to cache_key_url: %s", cache_key_url);
-                  TSHandleMLocRelease(hdr_bufp, TS_NULL_MLOC, ps_loc);
+                  TSHandleMLocRelease(hdr_buf, TS_NULL_MLOC, ps_loc);
+                }
+              }
+            }
+
+            // optionally consider an X-CRR-IMS header
+            if (pc->consider_ims_header) {
+              TSMLoc const imsloc = TSMimeHdrFieldFind(hdr_buf, hdr_loc, X_IMS_HEADER.data(), X_IMS_HEADER.size());
+              if (TS_NULL_MLOC != imsloc) {
+                time_t const itime = TSMimeHdrFieldValueDateGet(hdr_buf, hdr_loc, imsloc);
+                DEBUG_LOG("Servicing the '%.*s' header", (int)X_IMS_HEADER.size(), X_IMS_HEADER.data());
+                TSHandleMLocRelease(hdr_buf, hdr_loc, imsloc);
+                if (0 < itime) {
+                  txn_state->ims_time = itime;
                 }
               }
             }
@@ -410,6 +426,92 @@ set_header(TSMBuffer bufp, TSMLoc hdr_loc, const char *header, int len, const ch
 
   return ret;
 }
+
+time_t
+get_date_from_cached_hdr(TSHttpTxn txn)
+{
+  TSMBuffer buf;
+  TSMLoc hdr_loc, date_loc;
+  time_t date = 0;
+
+  if (TSHttpTxnCachedRespGet(txn, &buf, &hdr_loc) == TS_SUCCESS) {
+    date_loc = TSMimeHdrFieldFind(buf, hdr_loc, TS_MIME_FIELD_DATE, TS_MIME_LEN_DATE);
+    if (date_loc != TS_NULL_MLOC) {
+      date = TSMimeHdrFieldValueDateGet(buf, hdr_loc, date_loc);
+      TSHandleMLocRelease(buf, hdr_loc, date_loc);
+    }
+    TSHandleMLocRelease(buf, TS_NULL_MLOC, hdr_loc);
+  }
+
+  return date;
+}
+
+/**
+ * Handle a special IMS request.
+ */
+void
+handle_cache_lookup_complete(TSHttpTxn txnp, txndata *const txn_state)
+{
+  int cachestat;
+  if (TS_SUCCESS == TSHttpTxnCacheLookupStatusGet(txnp, &cachestat)) {
+    if (TS_CACHE_LOOKUP_HIT_FRESH == cachestat) {
+      time_t const ch_time = get_date_from_cached_hdr(txnp);
+      DEBUG_LOG("IMS Cached header time %" PRId64 " vs IMS %" PRId64, ch_time, txn_state->ims_time);
+      if (ch_time < txn_state->ims_time) {
+        TSHttpTxnCacheLookupStatusSet(txnp, TS_CACHE_LOOKUP_HIT_STALE);
+        if (TSIsDebugTagSet(PLUGIN_NAME)) {
+          int url_len         = 0;
+          char *const req_url = TSHttpTxnEffectiveUrlStringGet(txnp, &url_len);
+          if (nullptr != req_url) {
+            std::string const &rv = txn_state->range_value;
+            DEBUG_LOG("Forced revalidate %.*s-%s", url_len, req_url, rv.c_str());
+
+            TSfree(req_url);
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Transaction event handler.
+ */
+int
+transaction_handler(TSCont contp, TSEvent event, void *edata)
+{
+  TSHttpTxn txnp           = static_cast<TSHttpTxn>(edata);
+  txndata *const txn_state = static_cast<txndata *>(TSContDataGet(contp));
+
+  switch (event) {
+  case TS_EVENT_HTTP_READ_RESPONSE_HDR:
+    handle_server_read_response(txnp, txn_state);
+    break;
+  case TS_EVENT_HTTP_SEND_REQUEST_HDR:
+    handle_send_origin_request(contp, txnp, txn_state);
+    break;
+  case TS_EVENT_HTTP_SEND_RESPONSE_HDR:
+    handle_client_send_response(txnp, txn_state);
+    break;
+  case TS_EVENT_HTTP_CACHE_LOOKUP_COMPLETE:
+    handle_cache_lookup_complete(txnp, txn_state);
+    break;
+  case TS_EVENT_HTTP_TXN_CLOSE:
+    if (txn_state != nullptr) {
+      TSContDataSet(contp, nullptr);
+      delete txn_state;
+    }
+    TSContDestroy(contp);
+    break;
+  default:
+    TSAssert(!"Unexpected event");
+    break;
+  }
+  TSHttpTxnReenable(txnp, TS_EVENT_HTTP_CONTINUE);
+  return 0;
+}
+
+} // namespace
 
 /**
  * Remap initialization.
