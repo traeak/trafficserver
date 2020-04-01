@@ -75,15 +75,6 @@ The slice plugin supports the following options::
         Limited to any positive number.
         Ignored if --blockbytes provided.
 
-    --remap-host=<loopback hostname> (optional)
-        Uses effective url with given hostname for remapping.
-        Requires setting up an intermediate loopback remap rule.
-        -r for short
-
-    --pace-errorlog=<seconds> (optional)
-        Limit stitching error logs to every 'n' second(s)
-        -p for short
-
     --disable-errorlog (optional)
         Disable writing block stitch errors to the error log.
         -d for short
@@ -99,6 +90,37 @@ The slice plugin supports the following options::
         If not provided will always slice
         Cannot be used with --exclude-regex
         -i for short
+
+    --pace-errorlog=<seconds> (optional)
+        Limit stitching error logs to every 'n' second(s)
+        -p for short
+
+    --ref-relative (optional)
+        Self healing mode typically uses slice 0 as the reference slice
+        for every request.  This is very safe but also increases plugin
+        time and latency as the first slice is always fully processed
+        whether or not the original requests needs any data from slice 0.
+        This option uses the first slice in the request as reference
+        which has better performance.  A downside of this mode is that
+        self healing won't happen if blocks in a request agree.
+        Normally leave this off.
+        -l for short
+
+    --remap-host=<loopback hostname> (optional)
+        Uses effective url with given hostname for remapping.
+        Requires setting up an intermediate loopback remap rule.
+        -r for short
+
+    --throttle (optional)
+        Under certain circumstances where many contiguous slices are in
+        RAM cache ATS will aggressively try to push these through the
+        slice plugin.  The downside of this is that all these contiguous
+        slices end up being marked as fresh even if the downstream
+        client aborts.  This option keeps track of how much data the
+        client has already passed down and slows down issuing new
+        slice requests.
+        Normally leave this off.
+        -o for short
 
 Examples::
 
@@ -215,8 +237,8 @@ Important Notes
 This plugin assumes that the content requested is cacheable.
 
 Any first block server response that is not a 206 is passed directly
-down to the client.  If that response is a '200' only the first
-portion of the response is passed back and the transaction is closed.
+down to the client. Any 200 responses are passed back through to
+the client.
 
 Only the first server response block is used to evaluate any "If-"
 conditional headers.  Subsequent server slice block requests
