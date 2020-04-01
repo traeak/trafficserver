@@ -85,15 +85,20 @@ handle_client_req(TSCont contp, TSEvent event, Data *const data)
       rangebe            = Range(0, Range::maxval);
     }
 
-    // set to the first block in range
-    data->m_blocknum  = rangebe.firstBlockFor(data->m_config->m_blockbytes);
+#if defined(REF_BLOCK_0)
+    // set to the reference slice block (slice 0)
+    data->m_blocknum = 0;
+#else
+    // download first slice
+    data->m_blocknum = rangebe.firstBlockFor(data->m_config->m_blockbytes);
+#endif
     data->m_req_range = rangebe;
 
     // remove ATS keys to avoid 404 loop
     header.removeKey(TS_MIME_FIELD_VIA, TS_MIME_LEN_VIA);
     header.removeKey(TS_MIME_FIELD_X_FORWARDED_FOR, TS_MIME_LEN_X_FORWARDED_FOR);
 
-    // send the first block request to server
+    // send block request to server
     if (!request_block(contp, data)) {
       abort(contp, data);
       return false;
@@ -119,7 +124,7 @@ handle_client_req(TSCont contp, TSEvent event, Data *const data)
 void
 handle_client_resp(TSCont contp, TSEvent event, Data *const data)
 {
-  DEBUG_LOG("%p handle_client_resp %s", data, TSHttpEventNameLookup(event));
+  // DEBUG_LOG("%p handle_client_resp %s", data, TSHttpEventNameLookup(event));
 
 #if defined(COLLECT_STATS)
   TSStatIntIncrement(stats::Client, 1);
@@ -127,23 +132,43 @@ handle_client_resp(TSCont contp, TSEvent event, Data *const data)
 
   switch (event) {
   case TS_EVENT_VCONN_WRITE_READY: {
-    if (Data::BlockState::Pending == data->m_blockstate) {
-      bool start_next_block = true;
-
-      if (data->m_config->m_throttle) {
+    switch (data->m_blockstate) {
+      {
+      case BlockState::Fail:
+      case BlockState::PendingRef:
+      case BlockState::ActiveRef: {
         TSVIO const output_vio    = data->m_dnstream.m_write.m_vio;
         int64_t const output_done = TSVIONDoneGet(output_vio);
         int64_t const output_sent = data->m_bytessent;
-        int64_t const threshout   = data->m_config->m_blockbytes;
 
-        if (threshout < (output_done - output_sent)) {
-          start_next_block = false;
-          DEBUG_LOG("%p handle_client_resp: throttling %" PRId64, data, (output_done - output_sent));
+        if (output_sent == output_done) {
+          DEBUG_LOG("Downstream output is done, shutting down");
+          shutdown(contp, data);
         }
-      }
+      } break;
 
-      if (start_next_block) {
-        request_block(contp, data);
+      case BlockState::Pending: {
+        bool start_next_block = true;
+
+        if (data->m_config->m_throttle) {
+          TSVIO const output_vio    = data->m_dnstream.m_write.m_vio;
+          int64_t const output_done = TSVIONDoneGet(output_vio);
+          int64_t const output_sent = data->m_bytessent;
+          int64_t const threshout   = data->m_config->m_blockbytes;
+
+          if (threshout < (output_done - output_sent)) {
+            start_next_block = false;
+            DEBUG_LOG("%p handle_client_resp: throttling %" PRId64, data, (output_done - output_sent));
+          }
+
+          if (start_next_block) {
+            DEBUG_LOG("Starting next block request");
+            request_block(contp, data);
+          }
+        }
+      } break;
+      default:
+        break;
       }
     }
   } break;

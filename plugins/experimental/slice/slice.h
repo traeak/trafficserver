@@ -21,6 +21,7 @@
 #include "ts/ts.h"
 
 #include <cstring>
+#include <string_view>
 
 #ifndef SLICE_EXPORT
 #define SLICE_EXPORT extern "C" tsapi
@@ -30,11 +31,18 @@
 #define PLUGIN_NAME "slice"
 #endif
 
+// Slice 0 is always the reference
+#ifndef REF_BLOCK_0
+#define REF_BLOCK_0
+#endif
+
+constexpr std::string_view X_CRR_IMS_HEADER = {"X-Crr-Ims"};
+
 #if !defined(UNITTEST)
 
 #define __FILENAME__ (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define DEBUG_LOG(fmt, ...)                                                      \
-  TSDebug(PLUGIN_NAME, "[%s:%04d] %s(): " fmt, __FILENAME__, __LINE__, __func__, \
+  TSDebug(PLUGIN_NAME, "[%s:% 4d] %s(): " fmt, __FILENAME__, __LINE__, __func__, \
           ##__VA_ARGS__) /*                                                      \
                                  ; fprintf(stderr, "[%s:%04d]: " fmt "\n"        \
                                          , __FILENAME__                          \
@@ -43,7 +51,7 @@
                          */
 
 #define ERROR_LOG(fmt, ...)                                                         \
-  TSError("[%s:%04d] %s(): " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__); \
+  TSError("[%s:% 4d] %s(): " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__); \
   TSDebug(PLUGIN_NAME, "[%s:%04d] %s(): " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
 
 #else

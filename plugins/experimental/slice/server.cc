@@ -46,13 +46,18 @@ contentRangeFrom(HttpHeader const &header)
 
   if (!hasContentRange) {
     DEBUG_LOG("invalid response header, no Content-Range");
-  } else if (!bcr.fromStringClosed(rangestr)) {
-    DEBUG_LOG("invalid response header, malformed Content-Range, %s", rangestr);
+  } else {
+    // ensure null termination
+    rangestr[rangelen] = '\0';
+    if (!bcr.fromStringClosed(rangestr)) {
+      DEBUG_LOG("invalid response header, malformed Content-Range, %s", rangestr);
+    }
   }
 
   return bcr;
 }
 
+// Also reference server header
 bool
 handleFirstServerHeader(Data *const data, TSCont const contp)
 {
@@ -123,11 +128,14 @@ handleFirstServerHeader(Data *const data, TSCont const contp)
     return false;
   }
 
+  // save data header
+  header.timeForKey(TS_MIME_FIELD_DATE, TS_MIME_LEN_DATE, &data->m_date);
+
   // save weak cache header identifiers (rfc7232 section 2)
   data->m_etaglen = sizeof(data->m_etag) - 1;
   header.valueForKey(TS_MIME_FIELD_ETAG, TS_MIME_LEN_ETAG, data->m_etag, &data->m_etaglen);
-  data->m_lastmodifiedlen = sizeof(data->m_lastmodified) - 1;
-  header.valueForKey(TS_MIME_FIELD_LAST_MODIFIED, TS_MIME_LEN_LAST_MODIFIED, data->m_lastmodified, &data->m_lastmodifiedlen);
+
+  header.timeForKey(TS_MIME_FIELD_LAST_MODIFIED, TS_MIME_LEN_LAST_MODIFIED, &data->m_lastmodified);
 
   // size of the first block payload
   data->m_blockexpected = blockcr.rangeSize();
@@ -241,9 +249,8 @@ logSliceError(char const *const message, Data const *const data, HttpHeader cons
   header_resp.valueForKey(TS_MIME_FIELD_ETAG, TS_MIME_LEN_ETAG, etagstr, &etaglen);
 
   // last modified
-  char lmstr[1024];
-  int lmlen = sizeof(lmstr);
-  header_resp.valueForKey(TS_MIME_FIELD_LAST_MODIFIED, TS_MIME_LEN_LAST_MODIFIED, lmstr, &lmlen);
+  time_t lmgot = 0;
+  header_resp.timeForKey(TS_MIME_FIELD_LAST_MODIFIED, TS_MIME_LEN_LAST_MODIFIED, &lmgot);
 
   // cc
   char ccstr[2048];
@@ -272,19 +279,19 @@ logSliceError(char const *const message, Data const *const data, HttpHeader cons
             " norm_range=\"%.*s\""
 
             " etag_exp=\"%.*s\""
-            " lm_exp=\"%.*s\""
+            " lm_exp=\"%" PRId64 "\""
 
             " blk_range=\"%" PRId64 "-%" PRId64 "\""
 
             " status_got=\"%d\""
             " cr_got=\"%.*s\""
             " etag_got=\"%.*s\""
-            " lm_got=\"%.*s\""
+            " lm_got=\"%" PRId64 "\""
             " cc=\"%.*s\""
             " via=\"%.*s\"",
             secs, ms, message, (int)urlplen, urlpstr, uaslen, uasstr, rangelen, rangestr, normlen, normstr, (int)etagexplen,
-            etagexpstr, data->m_lastmodifiedlen, data->m_lastmodified, blockbeg, blockend - 1, statusgot, crlen, crstr,
-            (int)etaggotlen, etaggotstr, lmlen, lmstr, cclen, ccstr, vialen, viastr);
+            etagexpstr, data->m_lastmodified, blockbeg, blockend - 1, statusgot, crlen, crstr, (int)etaggotlen, etaggotstr, lmgot,
+            cclen, ccstr, vialen, viastr);
 }
 
 bool
@@ -300,40 +307,106 @@ handleNextServerHeader(Data *const data, TSCont const contp)
     return false;
   }
 
+  bool same = true;
+
   // can't parse the content range header, abort -- might be too strict
   ContentRange const blockcr = contentRangeFrom(header);
   if (!blockcr.isValid() || blockcr.m_length != data->m_contentlen) {
     logSliceError("Mismatch/Bad block Content-Range", data, header);
-    return false;
+    same = false;
   }
 
-  bool same = true;
+  if (same) {
+    // prefer the etag but use Last-Modified if we must.
+    char etag[8192];
+    int etaglen = sizeof(etag);
+    header.valueForKey(TS_MIME_FIELD_ETAG, TS_MIME_LEN_ETAG, etag, &etaglen);
 
-  // prefer the etag but use Last-Modified if we must.
-  char etag[8192];
-  int etaglen = sizeof(etag);
-  header.valueForKey(TS_MIME_FIELD_ETAG, TS_MIME_LEN_ETAG, etag, &etaglen);
-
-  if (0 < data->m_etaglen || 0 < etaglen) {
-    same = data->m_etaglen == etaglen && 0 == strncmp(etag, data->m_etag, etaglen);
-    if (!same) {
-      logSliceError("Mismatch block Etag", data, header);
-    }
-  } else {
-    char lastmodified[8192];
-    int lastmodifiedlen = sizeof(lastmodified);
-    header.valueForKey(TS_MIME_FIELD_LAST_MODIFIED, TS_MIME_LEN_LAST_MODIFIED, lastmodified, &lastmodifiedlen);
-    if (0 < data->m_lastmodifiedlen || 0 != lastmodifiedlen) {
-      same = data->m_lastmodifiedlen == lastmodifiedlen && 0 == strncmp(lastmodified, data->m_lastmodified, lastmodifiedlen);
+    if (0 < data->m_etaglen || 0 < etaglen) {
+      same = data->m_etaglen == etaglen && 0 == strncmp(etag, data->m_etag, etaglen);
+      if (!same) {
+        logSliceError("Mismatch block Etag", data, header);
+      }
+    } else {
+      time_t lastmodified = 0;
+      header.timeForKey(TS_MIME_FIELD_LAST_MODIFIED, TS_MIME_LEN_LAST_MODIFIED, &lastmodified);
+      DEBUG_LOG("Slice Time %" PRId64 ", Ref Time %" PRId64, lastmodified, data->m_lastmodified);
+      same = (lastmodified == data->m_lastmodified);
       if (!same) {
         logSliceError("Mismatch block Last-Modified", data, header);
       }
     }
   }
 
-  if (!same) {
-    data->m_upstream.close();
-    return false;
+  // Header mismatch
+  if (same) {
+    // If we were in reference block refetch mode and the headers
+    // still match there is a problem
+    if (BlockState::ActiveRef == data->m_blockstate) {
+      ERROR_LOG("Reference block refetched, got the same block back again");
+      return false;
+    }
+  } else {
+    switch (data->m_blockstate) {
+    case BlockState::Active: {
+      data->m_upstream.abort();
+
+      // Refetch the current interior slice
+      data->m_blockstate = BlockState::PendingInt;
+
+      time_t date = 0;
+      header.timeForKey(TS_MIME_FIELD_DATE, TS_MIME_LEN_DATE, &date);
+
+      // Ask for any slice newer than the cached one
+      time_t const dateims = date + 1;
+
+      DEBUG_LOG("Attempting to reissue interior slice block request with IMS header time: %" PRId64, dateims);
+
+      // add special CRR IMS header to the request
+      HttpHeader headerreq(data->m_req_hdrmgr.m_buffer, data->m_req_hdrmgr.m_lochdr);
+      if (!headerreq.setKeyTime(X_CRR_IMS_HEADER.data(), X_CRR_IMS_HEADER.size(), dateims)) {
+        ERROR_LOG("Failed setting '%.*s'", (int)X_CRR_IMS_HEADER.size(), X_CRR_IMS_HEADER.data());
+        return false;
+      }
+
+    } break;
+    case BlockState::ActiveInt: {
+      data->m_upstream.abort();
+
+      // New interior slice still mismatches, refetch the reference slice
+      data->m_blockstate = BlockState::PendingRef;
+
+      // Ask for any slice newer than the cached one
+      time_t const dateims = data->m_date + 1;
+
+      DEBUG_LOG("Attempting to reissue reference slice block request with IMS header time: %" PRId64, dateims);
+
+      // add special CRR IMS header to the request
+      HttpHeader headerreq(data->m_req_hdrmgr.m_buffer, data->m_req_hdrmgr.m_lochdr);
+      if (!headerreq.setKeyTime(X_CRR_IMS_HEADER.data(), X_CRR_IMS_HEADER.size(), dateims)) {
+        ERROR_LOG("Failed setting '%.*s'", (int)X_CRR_IMS_HEADER.size(), X_CRR_IMS_HEADER.data());
+        return false;
+      }
+
+      // Reset for first block
+#if defined(REF_BLOCK_0)
+      data->m_blocknum = 0;
+#else
+      data->m_blocknum = data->m_req_range.firstBlockFor(data->m_config->m_blockbytes);
+#endif
+      return true;
+
+    } break;
+      // Refetch the reference slice
+    case BlockState::ActiveRef: {
+      // In this state the reference changed otherwise the asset is toast
+      // reset the content length (if content length drove the mismatch)
+      data->m_contentlen = blockcr.m_length;
+      return true;
+    } break;
+    default:
+      break;
+    }
   }
 
   data->m_blockexpected = blockcr.rangeSize();
@@ -347,7 +420,7 @@ handleNextServerHeader(Data *const data, TSCont const contp)
 void
 handle_server_resp(TSCont contp, TSEvent event, Data *const data)
 {
-  DEBUG_LOG("%p handle_server_resp: %s", data, TSHttpEventNameLookup(event));
+  //  DEBUG_LOG("%p handle_server_resp: %s", data, TSHttpEventNameLookup(event));
 
 #if defined(COLLECT_STATS)
   TSStatIntIncrement(stats::Server, 1);
@@ -386,7 +459,7 @@ handle_server_resp(TSCont contp, TSEvent event, Data *const data)
       // kill the upstream and allow dnstream to clean up
       if (!headerStat) {
         data->m_upstream.abort();
-        data->m_blockstate = Data::BlockState::Fail;
+        data->m_blockstate = BlockState::Fail;
         if (data->m_dnstream.m_write.isOpen()) {
           TSVIOReenable(data->m_dnstream.m_write.m_vio);
         } else {
@@ -395,8 +468,41 @@ handle_server_resp(TSCont contp, TSEvent event, Data *const data)
         return;
       }
 
-      // how much to fast forward into this data block
-      data->m_blockskip = data->m_req_range.skipBytesForBlock(data->m_config->m_blockbytes, data->m_blocknum);
+      // header may have been successfully parsed but with caveats
+      switch (data->m_blockstate) {
+        // request new version of current internal slice
+      case BlockState::PendingInt: {
+        request_block(contp, data);
+        return;
+      } break;
+        // request new version of reference slice
+      case BlockState::PendingRef: {
+        request_block(contp, data);
+        return;
+      } break;
+      case BlockState::ActiveRef: {
+        // Mark the reference block for "skip".
+        int64_t const blockbytes      = data->m_config->m_blockbytes;
+        int64_t const firstblock      = data->m_req_range.firstBlockFor(blockbytes);
+        int64_t const blockpos        = firstblock * blockbytes;
+        int64_t const firstblockbytes = std::min(blockbytes, data->m_contentlen - blockpos);
+        data->m_blockskip             = firstblockbytes;
+
+        // Check if we should abort the client
+        if (data->m_dnstream.isOpen()) {
+          TSVIO const output_vio    = data->m_dnstream.m_write.m_vio;
+          int64_t const output_done = TSVIONDoneGet(output_vio);
+          int64_t const output_sent = data->m_bytessent;
+          if (output_done == output_sent) {
+            data->m_dnstream.abort();
+          }
+        }
+      } break;
+      default: {
+        // how much to normally fast forward into this data block
+        data->m_blockskip = data->m_req_range.skipBytesForBlock(data->m_config->m_blockbytes, data->m_blocknum);
+      } break;
+      }
     }
 
     transfer_content_bytes(data);
@@ -405,13 +511,18 @@ handle_server_resp(TSCont contp, TSEvent event, Data *const data)
     // fprintf(stderr, "%p: TS_EVENT_VCONN_READ_COMPLETE\n", data);
   } break;
   case TS_EVENT_VCONN_EOS: {
-    data->m_blockstate = Data::BlockState::Pending;
     data->m_upstream.close();
+
+    if (BlockState::ActiveRef == data->m_blockstate) {
+      return;
+    }
+
+    data->m_blockstate = BlockState::Pending;
 
     // check for block truncation
     if (data->m_blockconsumed < data->m_blockexpected) {
       DEBUG_LOG("%p handle_server_resp truncation: %" PRId64 "\n", data, data->m_blockexpected - data->m_blockconsumed);
-      data->m_blockstate = Data::BlockState::Fail;
+      data->m_blockstate = BlockState::Fail;
       //      shutdown(contp, data);
       return;
     }
@@ -454,7 +565,7 @@ handle_server_resp(TSCont contp, TSEvent event, Data *const data)
 
     } else {
       data->m_upstream.close();
-      data->m_blockstate = Data::BlockState::Done;
+      data->m_blockstate = BlockState::Done;
       if (!data->m_dnstream.m_read.isOpen()) {
         shutdown(contp, data);
       }
