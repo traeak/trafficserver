@@ -30,17 +30,17 @@ time1st=$((timetoday - 200))
 time2nd=$((timetoday - 100))
 time3rd=$((timetoday - 50))
 cchdr="max-age=50000"
-path="~p.tex/~s.2137859/lm/old1st"
+path="~p.tex/~s.2137859/02_lm/old2nd"
 
 # Last-Modified tests
-echo "first slice out of date"
+echo "second slice out of date"
 
-# 1st slice old
+# 2nd slice old
 curl -x ${ats} \
 	"http://cache_range_requests/${path}" \
 	-H "X-Dtp: ~lm.${time1st}" \
 	-H "X-Dtp-Cc: ${cchdr}" \
-	-r 0-999999 \
+	-r 1000000-1999999 \
 	| wc -c
 
 sleep 1
@@ -49,7 +49,7 @@ curl -x ${ats} \
 	"http://cache_range_requests/${path}" \
 	-H "X-Dtp: ~lm.${time2nd}" \
 	-H "X-Dtp-Cc: ${cchdr}" \
-	-r 1000000-1999999 \
+	-r 0-999999 \
 	| wc -c
 
 curl -x ${ats} \
@@ -59,8 +59,7 @@ curl -x ${ats} \
 	-r 2000000-2999999 \
 	| wc -c
 
-
-# 1st slice old
+# 2nd slice old
 curl -Lv -x ${ats} \
 	"http://slice/${path}" \
 	-H "X-Dtp: ~lm.${time2nd}" \
@@ -69,7 +68,7 @@ curl -Lv -x ${ats} \
 	| wc -c
 
 
-# 1st slice old
+# 2nd slice old
 curl -Lv -x ${ats} \
 	"http://slice/${path}" \
 	-H "X-Dtp: ~lm.${time2nd}" \

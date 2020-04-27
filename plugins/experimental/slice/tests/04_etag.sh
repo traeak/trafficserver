@@ -31,7 +31,7 @@ etag1st="first"
 etag2nd="second"
 etag3rd="third"
 cchdr="max-age=1000000"
-path="~p.tex/~s.2137859/etag/oldest1st"
+path="~p.tex/~s.2137859/04_etag/oldest1st"
 
 # Last-Modified tests .. order of injection matters here
 echo "all out of date, 1st slice even more out of date"

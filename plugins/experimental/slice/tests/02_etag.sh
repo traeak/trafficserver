@@ -31,17 +31,17 @@ etag1st="first"
 etag2nd="second"
 etag3rd="third"
 cchdr="max-age=1000000"
-path="~p.tex/~s.2137859/etag/old1st"
+path="~p.tex/~s.2137859/02_etag/old2nd"
 
 # Last-Modified tests .. order of injection matters here
-echo "first slice out of date"
+echo "second slice out of date"
 
-# 1st slice old
+# 2nd slice old
 curl -x ${ats} \
 	"http://cache_range_requests/${path}" \
 	-H "X-Dtp: ~etag.${etag1st}" \
 	-H "X-Dtp-Cc: ${cchdr}" \
-	-r 0-999999 \
+	-r 1000000-1999999 \
 	| wc -c
 
 sleep 1
@@ -50,7 +50,7 @@ curl -x ${ats} \
 	"http://cache_range_requests/${path}" \
 	-H "X-Dtp: ~etag.${etag2nd}" \
 	-H "X-Dtp-Cc: ${cchdr}" \
-	-r 1000000-1999999 \
+	-r 0-999999 \
 	| wc -c
 
 curl -x ${ats} \
@@ -60,8 +60,7 @@ curl -x ${ats} \
 	-r 2000000-2999999 \
 	| wc -c
 
-
-# 1st slice old
+# 2nd slice old
 curl -Lv -x ${ats} \
 	"http://slice/${path}" \
 	-H "X-Dtp: ~etag.${etag2nd}" \
@@ -69,11 +68,9 @@ curl -Lv -x ${ats} \
 	-r 1000000- \
 	| wc -c
 
-
-# 1st slice old
+# 2nd slice old
 curl -Lv -x ${ats} \
 	"http://slice/${path}" \
 	-H "X-Dtp: ~etag.${etag2nd}" \
 	-H "X-Dtp-Cc: ${cchdr}" \
 	| wc -c
-

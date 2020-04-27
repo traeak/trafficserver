@@ -31,7 +31,7 @@ etag1st="first"
 etag2nd="second"
 etag3rd="third"
 cchdr="max-age=1000000"
-path="~p.tex/~s.2137859/etag/nocache1st"
+path="~p.tex/~s.2137859/06_etag/nocache1st"
 
 # Last-Modified tests .. order of injection matters here
 echo "1st slice cold, no longer cache controlled"

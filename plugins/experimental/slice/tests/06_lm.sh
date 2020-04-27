@@ -30,7 +30,7 @@ time1st=$((timetoday - 200))
 time2nd=$((timetoday - 100))
 time3rd=$((timetoday - 50))
 cchdr="max-age=50000"
-path="~p.tex/~s.2137859/lm/nocache1st"
+path="~p.tex/~s.2137859/06_lm/nocache1st"
 
 # Last-Modified tests
 echo "1st slice cold, no longer cache controlled"

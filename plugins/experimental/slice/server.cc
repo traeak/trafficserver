@@ -80,11 +80,11 @@ handleFirstServerHeader(Data *const data, TSCont const contp)
     //    TSVIONBytesSet(output_vio, hlen);
     TSHttpHdrPrint(header.m_buffer, header.m_lochdr, output_buf);
     transfer_all_bytes(data);
-
     return false;
   }
 
   ContentRange const blockcr = contentRangeFrom(header);
+
   // 206 with bad content range?
   if (!blockcr.isValid()) {
     static std::string const &msg502 = string502();
@@ -301,19 +301,30 @@ handleNextServerHeader(Data *const data, TSCont const contp)
   HttpHeader header(data->m_resp_hdrmgr.m_buffer, data->m_resp_hdrmgr.m_lochdr);
   //  DEBUG_LOG("Next Header:\n%s", header.toString().c_str());
 
-  // only process a 206, everything else just aborts
-  if (TS_HTTP_STATUS_PARTIAL_CONTENT != header.status()) {
-    logSliceError("Non 206 internal block response", data, header);
-    return false;
-  }
-
   bool same = true;
 
-  // can't parse the content range header, abort -- might be too strict
-  ContentRange const blockcr = contentRangeFrom(header);
-  if (!blockcr.isValid() || blockcr.m_length != data->m_contentlen) {
-    logSliceError("Mismatch/Bad block Content-Range", data, header);
+  switch (header.status()) {
+  case TS_HTTP_STATUS_NOT_FOUND:
+    // need to reissue reference slice
     same = false;
+    break;
+  case TS_HTTP_STATUS_PARTIAL_CONTENT:
+    break;
+  default:
+    logSliceError("Non 206/404 internal block response", data, header);
+    return false;
+    break;
+  }
+
+  // can't parse the content range header, abort -- might be too strict
+  ContentRange blockcr;
+
+  if (same) {
+    blockcr = contentRangeFrom(header);
+    if (!blockcr.isValid() || blockcr.m_length != data->m_contentlen) {
+      logSliceError("Mismatch/Bad block Content-Range", data, header);
+      same = false;
+    }
   }
 
   if (same) {

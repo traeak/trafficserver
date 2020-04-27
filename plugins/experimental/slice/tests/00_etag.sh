@@ -31,7 +31,7 @@ etag1st="first"
 etag2nd="second"
 etag3rd="third"
 cchdr="max-age=1000000"
-path="~p.tex/~s.2137859/etag/good"
+path="~p.tex/~s.2137859/00_etag/good"
 
 # Last-Modified tests .. order of injection matters here
 echo "normal test case, everything good"

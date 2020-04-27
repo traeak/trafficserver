@@ -30,7 +30,7 @@ time1st=$((timetoday - 200))
 time2nd=$((timetoday - 100))
 time3rd=$((timetoday - 50))
 cchdr="max-age=50000"
-path="~p.tex/~s.2137859/lm/oldest2nd"
+path="~p.tex/~s.2137859/03_lm/oldest2nd"
 
 # Last-Modified tests
 echo "all out of date, 2nd slice even more out of date"

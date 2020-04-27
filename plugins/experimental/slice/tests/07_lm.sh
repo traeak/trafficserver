@@ -20,7 +20,7 @@
 #	"http://~p.tex/~s.2300000/a" \
 #	-H "X-Dtp: ~f.posevt,~posevt.1000005.etag0.foo.etag1.bar" \
 #	-r 999999-1004910 \
-#	| md5sum
+#	| wc -c
 
 timenow=`date +%s`
 timetoday=$(((timenow / 86400) * 86400))
@@ -30,12 +30,12 @@ time1st=$((timetoday - 200))
 time2nd=$((timetoday - 100))
 time3rd=$((timetoday - 50))
 cchdr="max-age=50000"
-path="~p.tex/~s.2137859/00_lm/good"
+path="~p.tex/~s.2137859/07_lm/4042nd"
 
 # Last-Modified tests
-echo "normal test case, everything good"
+echo "2nd slice cold, asset gone"
 
-# slices good
+# 2nd not cached
 curl -x ${ats} \
 	"http://cache_range_requests/${path}" \
 	-H "X-Dtp: ~lm.${time1st}" \
@@ -43,12 +43,6 @@ curl -x ${ats} \
 	-r 0-999999 \
 	| wc -c
 
-curl -x ${ats} \
-	"http://cache_range_requests/${path}" \
-	-H "X-Dtp: ~lm.${time1st}" \
-	-H "X-Dtp-Cc: ${cchdr}" \
-	-r 1000000-1999999 \
-	| wc -c
 
 curl -x ${ats} \
 	"http://cache_range_requests/${path}" \
@@ -57,11 +51,19 @@ curl -x ${ats} \
 	-r 2000000-2999999 \
 	| wc -c
 
+sleep 1
 
+# 2nd slice nocache
 curl -Lv -x ${ats} \
 	"http://slice/${path}" \
-	-H "X-Dtp: ~lm.${time2nd}" \
-	-H "X-Dtp-Cc: ${cchdr}" \
+	-H "X-Dtp-Cc: ~sc.404" \
 	-r 1000000- \
+	| wc -c
+
+
+# 2nd slice nocache
+curl -Lv -x ${ats} \
+	"http://slice/${path}" \
+	-H "X-Dtp-Cc: ~sc.404" \
 	| wc -c
 
