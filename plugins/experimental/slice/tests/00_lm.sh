@@ -58,10 +58,18 @@ curl -x ${ats} \
 	| wc -c
 
 
+# 2nd block+ request
 curl -Lv -x ${ats} \
 	"http://slice/${path}" \
 	-H "X-Dtp: ~lm.${time2nd}" \
 	-H "X-Dtp-Cc: ${cchdr}" \
 	-r 1000000- \
+	| wc -c
+
+# end full asset check
+curl -Lv -x ${ats} \
+	"http://slice/${path}" \
+	-H "X-Dtp: ~lm.${time2nd}" \
+	-H "X-Dtp-Cc: ${cchdr}" \
 	| wc -c
 

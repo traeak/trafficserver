@@ -66,3 +66,11 @@ curl -Lv -x ${ats} \
 	-r 1000000- \
 	| wc -c
 
+
+# full asset post check
+curl -Lv -x ${ats} \
+	"http://slice/${path}" \
+	-H "X-Dtp: ~etag.${etag2nd}" \
+	-H "X-Dtp-Cc: ${cchdr}" \
+	| wc -c
+
