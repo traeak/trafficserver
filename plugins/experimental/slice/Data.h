@@ -44,6 +44,7 @@ struct Data {
   Data &operator=(Data const &) = delete;
 
   Config *const m_config;
+  TSHttpTxn const m_txnp;
 
   sockaddr_storage m_client_ip;
 
@@ -87,7 +88,7 @@ struct Data {
 
   TSHttpParser m_http_parser{nullptr}; //!< cached for reuse
 
-  explicit Data(Config *const config) : m_config(config)
+  explicit Data(Config *const config, TSHttpTxn const txnp) : m_config(config), m_txnp(txnp)
   {
     m_hostname[0] = '\0';
     m_etag[0]     = '\0';

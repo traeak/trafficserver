@@ -76,7 +76,7 @@ read_request(TSHttpTxn txnp, Config *const config)
       }
 
       TSAssert(nullptr != config);
-      Data *const data = new Data(config);
+      Data *const data = new Data(config, txnp);
 
       // set up feedback connect
       if (AF_INET == ip->sa_family) {
@@ -167,6 +167,7 @@ read_request(TSHttpTxn txnp, Config *const config)
       // TSMutex const mutex = TSMutexCreate();
       TSCont const icontp(TSContCreate(intercept_hook, mutex));
       TSContDataSet(icontp, (void *)data);
+      TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_RESPONSE_HDR_HOOK, icontp);
       TSHttpTxnIntercept(icontp, txnp);
       return true;
     } else {

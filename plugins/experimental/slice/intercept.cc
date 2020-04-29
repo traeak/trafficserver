@@ -51,6 +51,11 @@ intercept_hook(TSCont contp, TSEvent event, void *edata)
     abort(contp, data);
   } break;
 
+  case TS_EVENT_HTTP_SEND_RESPONSE_HDR:
+    DEBUG_LOG("SEND_RESPONSE_HDR");
+    TSHttpTxnReenable(data->m_txnp, TS_EVENT_HTTP_CONTINUE);
+    break;
+
   default: {
     // data from client -- only the initial header
     if (data->m_dnstream.m_read.isOpen() && edata == data->m_dnstream.m_read.m_vio) {

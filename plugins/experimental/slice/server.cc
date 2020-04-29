@@ -97,7 +97,7 @@ handleFirstServerHeader(Data *const data, TSCont const contp)
   // set the resource content length from block response
   data->m_contentlen = blockcr.m_length;
 
-  // special case last N bytes
+  // special case last N bytes (-N)
   if (data->m_req_range.isEndBytes()) {
     data->m_req_range.m_end += data->m_contentlen;
     data->m_req_range.m_beg += data->m_contentlen;
