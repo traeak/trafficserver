@@ -406,6 +406,16 @@ handle_server_resp(TSCont contp, TSEvent event, Data *const data)
     // fprintf(stderr, "%p: TS_EVENT_VCONN_READ_COMPLETE\n", data);
   } break;
   case TS_EVENT_VCONN_EOS: {
+    // corner condition, good source header + 0 length aborted content
+    // results in no header being read, just an EOS.
+    // trying to delete the upstream will crash ATS (??)
+    if (0 == data->m_blockexpected) {
+      shutdown(contp, data); // this will crash if first block
+      return;
+    }
+
+    transfer_content_bytes(data);
+
     data->m_blockstate = Data::BlockState::Pending;
     data->m_upstream.close();
 
