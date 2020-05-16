@@ -224,6 +224,9 @@ directory of the |TS| source tree. Experimental plugins can be compiled by passi
 :doc:`Signed URLs <url_sig.en>`
    Adds support for verifying URL signatures for incoming requests to either deny or redirect access.
 
+:doc:`Slice <slice.en>`
+   Adds block range slicing.  Works together with the cache_range_requests plugin.
+
 :doc:`SSL Headers <sslheaders.en>`
    Populate request headers with SSL session information.
 
