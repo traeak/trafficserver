@@ -126,6 +126,7 @@ request_block(TSCont contp, Data *const data)
     break;
   default:
     ERROR_LOG("Invalid blockstate");
+    return false;
     break;
   }
 
