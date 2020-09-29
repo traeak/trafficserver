@@ -156,6 +156,12 @@ caching is finally implemented.
 Slice *ONLY* handles slicing up requests into blocks, it delegates
 actual caching and fetching to the cache_range_requests.so plugin.
 
+The slice plugin manually throttles ensuring that at most 2 slice blocks
+are in play at any one time.  During development of the slice plugin,
+it was noted that sequential blocks in ram cache were being served
+immediately to the slice plugin causing it to use a lot of cpu and ram
+in these cases.
+
 Plugin Function
 ---------------
 
