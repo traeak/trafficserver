@@ -888,6 +888,12 @@ PluginVC::get_inactivity_timeout()
   return inactive_timeout;
 }
 
+bool
+PluginVC::inactivity_timeout_is_default() const
+{
+  return 0 == inactive_timeout;
+}
+
 void
 PluginVC::add_to_keep_alive_queue()
 {

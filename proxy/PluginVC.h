@@ -96,6 +96,7 @@ public:
   bool add_to_active_queue() override;
   ink_hrtime get_active_timeout() override;
   ink_hrtime get_inactivity_timeout() override;
+	bool inactivity_timeout_is_default() const override;
 
   // Pure virutal functions we need to compile
   SOCKET get_socket() override;

@@ -282,6 +282,8 @@ public:
   ink_hrtime get_inactivity_timeout() override;
   ink_hrtime get_active_timeout() override;
 
+	bool inactivity_timeout_is_default() const override;
+
   void set_local_addr() override;
   void set_mptcp_state() override;
   void set_remote_addr() override;

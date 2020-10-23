@@ -532,6 +532,9 @@ public:
   /** @return current inactivity_timeout value in nanosecs */
   virtual ink_hrtime get_inactivity_timeout() = 0;
 
+  /** @return if the current inactivity_timeout is the default */
+  virtual bool inactivity_timeout_is_default() const = 0;
+
   /** Force an @a event if a write operation empties the write buffer.
 
       This event will be sent to the VIO, the same place as other IO events.

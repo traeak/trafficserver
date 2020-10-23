@@ -1402,6 +1402,12 @@ UnixNetVConnection::set_inactivity_timeout(ink_hrtime timeout_in)
   next_inactivity_timeout_at = Thread::get_hrtime() + inactivity_timeout_in;
 }
 
+TS_INLINE bool
+UnixNetVConnection::inactivity_timeout_is_default() const
+{
+	return nh->config.default_inactivity_timeout == inactivity_timeout_in;
+}
+
 /*
  * Close down the current netVC.  Save aside the socket and SSL information
  * and create new netVC in the current thread/netVC
