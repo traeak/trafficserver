@@ -358,6 +358,7 @@ handleNextServerHeader(Data *const data, TSCont const contp)
   // can't parse the content range header, abort -- might be too strict
   ContentRange blockcr;
 
+  // Asset length must match.  Chunked won't work
   if (same) {
     blockcr = contentRangeFrom(header);
     if (!blockcr.isValid() || blockcr.m_length != data->m_contentlen) {
@@ -366,13 +367,14 @@ handleNextServerHeader(Data *const data, TSCont const contp)
     }
   }
 
+  // if both have etags they must match,
+  // otherwise if either has last-modified it must match
   if (same) {
-    // prefer the etag but use Last-Modified if we must.
     char etag[8192];
     int etaglen = sizeof(etag);
     header.valueForKey(TS_MIME_FIELD_ETAG, TS_MIME_LEN_ETAG, etag, &etaglen);
 
-    if (0 < data->m_etaglen || 0 < etaglen) {
+    if (0 < data->m_etaglen && 0 < etaglen) {
       same = data->m_etaglen == etaglen && 0 == strncmp(etag, data->m_etag, etaglen);
       if (!same) {
         logSliceError("Mismatch block Etag", data, header);
