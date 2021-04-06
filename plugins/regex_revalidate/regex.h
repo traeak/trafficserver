@@ -36,7 +36,9 @@ public:
     ANCHORED         = 0x0004, // default (for Regex) is unanchored
   };
 
-  Regex() = default;
+  Regex()              = default;
+  Regex(Regex const &) = delete;
+  Regex &operator=(Regex const &) = delete;
   Regex(Regex &&that);
   Regex &operator=(Regex &&that);
 

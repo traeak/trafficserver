@@ -1,5 +1,7 @@
 /** @file
 
+  ATS plugin to do (simple) regular expression remap rules
+
   @section license License
 
   Licensed to the Apache Software Foundation (ASF) under one
@@ -53,6 +55,9 @@ constexpr char const *const PLUGIN_NAME = "regex_revalidate";
 constexpr char const *const RELOAD_TAG  = "config_reload";
 constexpr char const *const PRINT_TAG   = "config_print";
 
+constexpr char const *const RESULT_MISS  = "MISS";
+constexpr char const *const RESULT_STALE = "STALE";
+
 #define DEBUG_LOG(fmt, ...) TSDebug(PLUGIN_NAME, "%s:%d " fmt, __func__, __LINE__, ##__VA_ARGS__)
 
 #define ERROR_LOG(fmt, ...)                         \
@@ -60,53 +65,63 @@ constexpr char const *const PRINT_TAG   = "config_print";
   DEBUG_LOG(fmt, ##__VA_ARGS__)
 
 constexpr TSHRTime const CONFIG_TMOUT = 60000; // ms, 60s
-// constexpr TSHRTime const CONFIG_TMOUT = 5000; // ms, 5
 constexpr int const OVECTOR_SIZE      = 30;
 constexpr int const LOG_ROLL_INTERVAL = 86400;
 constexpr int const LOG_ROLL_OFFSET   = 0;
 
 TSCont config_cont{nullptr};
-Regex config_re;
-
-void *
-ts_malloc(size_t s)
-{
-  return TSmalloc(s);
-}
-
-void
-ts_free(void *s)
-{
-  return TSfree(s);
-}
 
 struct Invalidate {
+  static Regex config_re;
+
   std::string regex_text{};
   Regex regex{};
   time_t epoch{0};
   time_t expiry{0};
+  TSCacheLookupResult new_result{TS_CACHE_LOOKUP_HIT_STALE};
 
   Invalidate() = default;
 
   Invalidate(Invalidate const &orig)
   {
     regex_text = orig.regex_text;
+    regex.compile(regex_text.c_str());
     epoch      = orig.epoch;
     expiry     = orig.expiry;
-    regex.compile(regex_text.c_str());
+    new_result = orig.new_result;
   }
 
-  Invalidate(Invalidate &&orig) = default;
-  Invalidate &operator=(Invalidate &&rhs) = default;
+  Invalidate(Invalidate &&orig)
+  {
+    std::swap(regex_text, orig.regex_text);
+    std::swap(regex, orig.regex);
+    std::swap(epoch, orig.epoch);
+    std::swap(expiry, orig.expiry);
+    std::swap(new_result, orig.new_result);
+  }
+
+  Invalidate &
+  operator=(Invalidate &&rhs)
+  {
+    if (&rhs != this) {
+      std::swap(regex_text, rhs.regex_text);
+      std::swap(regex, rhs.regex);
+      std::swap(epoch, rhs.epoch);
+      std::swap(expiry, rhs.expiry);
+      std::swap(new_result, rhs.new_result);
+    }
+    return *this;
+  }
 
   Invalidate &
   operator=(Invalidate const &rhs)
   {
     if (&rhs != this) {
       regex_text = rhs.regex_text;
+      regex.compile(regex_text.c_str());
       epoch      = rhs.epoch;
       expiry     = rhs.expiry;
-      regex.compile(regex_text.c_str());
+      new_result = rhs.new_result;
     }
     return *this;
   }
@@ -125,12 +140,14 @@ struct Invalidate {
     return regex.matches(std::string_view{url, (unsigned)url_len});
   }
 
-  static Invalidate fromLine(time_t const epoch, Regex const &config_re, char *const line);
+  static Invalidate fromLine(time_t const epoch, char *const line);
 };
+
+Regex Invalidate::config_re;
 
 struct PluginState {
   std::string config_file{};
-  std::shared_ptr<std::vector<Invalidate>> invalidate_vec;
+  std::shared_ptr<std::vector<Invalidate>> invalidate_vec; // sorted by regex_text
   bool timed_reload{true};
   time_t config_file_mtime{0};
   time_t min_expiry{0};
@@ -151,7 +168,7 @@ struct PluginState {
 };
 
 Invalidate
-Invalidate::fromLine(time_t const epoch, Regex const &config_re, char *const line)
+Invalidate::fromLine(time_t const epoch, char *const line)
 {
   Invalidate rule;
 
@@ -159,7 +176,7 @@ Invalidate::fromLine(time_t const epoch, Regex const &config_re, char *const lin
   DEBUG_LOG("'%s'", line);
   int const rc = config_re.exec(line, ovector, OVECTOR_SIZE);
 
-  if (3 == rc) {
+  if (3 <= rc) {
     int const regbeg = ovector[2];
     int const regend = ovector[3];
 
@@ -175,6 +192,16 @@ Invalidate::fromLine(time_t const epoch, Regex const &config_re, char *const lin
       DEBUG_LOG("Invalid regex in line: '%s'", regstr);
     }
 
+    if (5 == rc) {
+      char const *const type = line + ovector[8];
+      if (0 == strcasecmp(type, RESULT_MISS)) {
+        DEBUG_LOG("Regex line set to result type %s: '%s'", RESULT_MISS, regstr);
+        rule.new_result = TS_CACHE_LOOKUP_MISS;
+      } else if (0 != strcasecmp(type, RESULT_STALE)) {
+        DEBUG_LOG("Unknown regex line result type '%s', using %s '%s'", type, RESULT_STALE, regstr);
+      }
+    }
+
     // restore the line char*
     line[regend] = oldch;
   }
@@ -186,9 +213,9 @@ void
 get_time_now_str(char *const buf, size_t const buflen)
 {
   TSHRTime const timenowusec = TShrtime();
-  int64_t const timemsec     = (int64_t)(timenowusec / 1000000);
-  time_t const timesec       = (time_t)(timemsec / 1000);
-  int const ms               = (int)(timemsec % 1000);
+  int64_t const timemsec     = static_cast<int64_t>(timenowusec / 1000000);
+  time_t const timesec       = static_cast<time_t>(timemsec / 1000);
+  int const ms               = static_cast<int>(timemsec % 1000);
 
   struct tm tm;
   gmtime_r(&timesec, &tm);
@@ -208,8 +235,9 @@ PluginState::printConfig() const
 
   if (invalidate_vec) {
     for (Invalidate const &iv : *invalidate_vec) {
-      fprintf(stderr, "[%s] %s line: '%s' epoch: %ju expiry: %ju\n", timebuf, PLUGIN_NAME, iv.regex_text.c_str(),
-              (uintmax_t)iv.epoch, (uintmax_t)iv.expiry);
+      char const *const typestr = (iv.new_result == TS_CACHE_LOOKUP_MISS ? RESULT_MISS : RESULT_STALE);
+      fprintf(stderr, "[%s] %s line: '%s' epoch: %ju expiry: %ju result: '%s'\n", timebuf, PLUGIN_NAME, iv.regex_text.c_str(),
+              (uintmax_t)iv.epoch, (uintmax_t)iv.expiry, typestr);
     }
   } else {
     fprintf(stderr, "[%s] %s config: EMPTY\n", timebuf, PLUGIN_NAME);
@@ -228,10 +256,12 @@ PluginState::logConfig() const
 
   if (invalidate_vec) {
     for (Invalidate const &iv : *invalidate_vec) {
-      TSDebug(PLUGIN_NAME, "line: '%s' epoch: %ju expiry: %ju", iv.regex_text.c_str(), (uintmax_t)iv.epoch, (uintmax_t)iv.expiry);
+      char const *const typestr = (iv.new_result == TS_CACHE_LOOKUP_MISS ? RESULT_MISS : RESULT_STALE);
+      TSDebug(PLUGIN_NAME, "line: '%s' epoch: %ju expiry: %ju result: '%s'", iv.regex_text.c_str(), (uintmax_t)iv.epoch,
+              (uintmax_t)iv.expiry, typestr);
       if (nullptr != log) {
-        TSTextLogObjectWrite(log, "line: '%s' epoch: %ju expiry: %ju", iv.regex_text.c_str(), (uintmax_t)iv.epoch,
-                             (uintmax_t)iv.expiry);
+        TSTextLogObjectWrite(log, "line: '%s' epoch: %ju expiry: %ju result: '%s'", iv.regex_text.c_str(), (uintmax_t)iv.epoch,
+                             (uintmax_t)iv.expiry, typestr);
       }
     }
   } else {
@@ -323,7 +353,7 @@ PluginState::loadConfig(time_t const timenow, std::vector<Invalidate> *const rul
     ++lineno;
     line[strcspn(line, "\r\n")] = '\0';
     if (0 < strlen(line) && '#' != line[0]) {
-      Invalidate rnew = Invalidate::fromLine(timenow, config_re, line);
+      Invalidate rnew = Invalidate::fromLine(timenow, line);
       if (rnew.is_valid()) {
         loaded.push_back(std::move(rnew));
       } else {
@@ -394,7 +424,7 @@ PluginState::loadConfig(time_t const timenow, std::vector<Invalidate> *const rul
       rules->push_back(*itcur);
       ++itcur;
     } else {
-      if (itload->expiry != itcur->expiry) {
+      if (itload->expiry != itcur->expiry || itload->new_result != itcur->new_result) {
         DEBUG_LOG("Updating rule: '%s'", itload->regex_text.c_str());
         rules->push_back(std::move(*itload));
         changed = true;
@@ -434,6 +464,20 @@ pruneConfig(time_t const timenow, std::vector<Invalidate> *const rules, time_t *
 
   // recalculate min_expiry
   *min_expiry = std::numeric_limits<time_t>::max();
+
+  auto iter = rules->begin();
+  while (rules->end() != iter) {
+    Invalidate const &inv = *iter;
+
+    if (inv.expiry < timenow) {
+      DEBUG_LOG("Removing rule: %s", inv.regex_text.c_str());
+      iter   = rules->erase(iter);
+      pruned = true;
+    } else {
+      *min_expiry = std::min(*min_expiry, inv.expiry);
+      ++iter;
+    }
+  }
 
   std::vector<Invalidate>::iterator itvec(rules->begin());
 
@@ -594,7 +638,7 @@ main_handler(TSCont cont, TSEvent event, void *edata)
               if (nullptr == url || 0 == url_len) {
                 break;
               } else if (inv.matches(url, url_len)) {
-                TSHttpTxnCacheLookupStatusSet(txn, TS_CACHE_LOOKUP_HIT_STALE);
+                TSHttpTxnCacheLookupStatusSet(txn, inv.new_result);
                 DEBUG_LOG("Forced revalidate - %.*s", url_len, url);
                 break;
               }
@@ -607,9 +651,6 @@ main_handler(TSCont cont, TSEvent event, void *edata)
         }
       }
     }
-    break;
-  case TS_EVENT_HTTP_TXN_CLOSE: // never called by global
-    TSContDestroy(cont);
     break;
   default:
     break;
@@ -624,26 +665,17 @@ main_handler(TSCont cont, TSEvent event, void *edata)
 namespace
 {
 void
-setup_memory_allocation()
-{
-  if (&ts_malloc != pcre_malloc) {
-    pcre_malloc = &ts_malloc;
-    pcre_free   = &ts_free;
-  }
-}
-
-void
 setup_config_cont(PluginState *const pstate)
 {
   if (nullptr == config_cont) {
     DEBUG_LOG("creating config continuation");
 
     // create reusable configuration file regex
-    constexpr char const *const expr = "^([^#].+?)\\s+(\\d+)\\s*$";
-    bool const cstat                 = config_re.compile(expr);
+    constexpr char const *const expr = "^([^#].+?)\\s+(\\d+)(\\s+(\\w+))?\\s*$";
+    bool const cstat                 = Invalidate::config_re.compile(expr);
 
     if (!cstat) {
-      ERROR_LOG("setup_config_cont: Unable to compile config_re");
+      ERROR_LOG("setup_config_cont: Unable to compile config_re, disabling plugin");
       return;
     }
 
@@ -686,8 +718,6 @@ TSPluginInit(int argc, char const *argv[])
     return;
   }
 
-  setup_memory_allocation();
-
   PluginState *const pstate = new PluginState;
   if (!pstate->fromArgs(argc, argv)) {
     ERROR_LOG("Remap plugin registration failed");
@@ -703,9 +733,6 @@ TSPluginInit(int argc, char const *argv[])
 
   TSAssert(nullptr != config_cont);
 
-  TSMutex const config_mutex = TSContMutexGet(config_cont);
-  TSMutexLock(config_mutex);
-
   time_t const timenow = time(nullptr);
 
   std::vector<Invalidate> newrules;
@@ -716,14 +743,12 @@ TSPluginInit(int argc, char const *argv[])
   pruneConfig(timenow, &newrules, &new_expiry);
   pstate->min_expiry = new_expiry;
 
-  auto vecnew = std::make_shared<std::vector<Invalidate>>(std::move(newrules));
+  auto vecnew            = std::make_shared<std::vector<Invalidate>>(std::move(newrules));
+  pstate->invalidate_vec = vecnew;
 
-  std::atomic_store(&(pstate->invalidate_vec), vecnew);
   DEBUG_LOG("Configuation installed");
 
   pstate->logConfig();
-
-  TSMutexUnlock(config_mutex);
 
   DEBUG_LOG("Global Plugin Init Complete");
 }
