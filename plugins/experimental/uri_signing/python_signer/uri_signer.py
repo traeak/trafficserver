@@ -62,14 +62,14 @@ def main():
   key_index = 0
   if args.key_index:
     key_index = args.key_index[0]
-    print("args key_index " + str(key_index))
+    #print("args key_index " + str(key_index))
   else:
     key_index = random.randint(0,len(keys)-1)
-    print("randomizing key index")
+    #print("randomizing key index")
 
-  print("Using key_index " + str(key_index))
+  #print("Using key_index " + str(key_index))
 
-  print("Using Key: " + str(keys[key_index]["kid"]) + " to sign URI.")
+  #print("Using Key: " + str(keys[key_index]["kid"]) + " to sign URI.")
   key = keys[key_index]
 
   # Build Out claimset
@@ -92,7 +92,9 @@ def main():
         claimset["cdniets"] = config["cdniets"]
       else:
         claimset["cdniets"] = 30
-
+  
+  if "cdnistd" in config.keys():
+    claimset["cdnistd"] = config["cdnistd"]
 
   # process override args - simple
   if args.iss:
@@ -100,6 +102,8 @@ def main():
   if args.exp:
     claimset["exp"] = args.exp[0]
   if args.aud:
+    claimset["aud"] = args.aud[0]
+  if args.cdnistd:
     claimset["aud"] = args.aud[0]
 
   # process override args - complex
@@ -120,12 +124,12 @@ def main():
   if args.k:
     key["k"] = args.k[0]
 
-  print(claimset)
-  print(key)
+  #print(claimset)
+  #print(key)
 
   Token = jwt.encode(claimset,key,algorithm=key["alg"])
 
-  print("Signed URL: " + args.uri + "?URISigningPackage=" + Token)
+  print(args.uri + "?URISigningPackage=" + Token)
 
 if __name__ == "__main__":
    main()
