@@ -125,7 +125,7 @@ tr = Test.AddTestRun("Initial load, state merged")
 ps = tr.Processes.Default
 ps.StartBefore(server, ready=When.PortOpen(server.Variables.Port))
 ps.StartBefore(Test.Processes.ts)
-ps.Command = 'cat ' + reval_state_path
+ps.Command = 'sleep 10 && cat ' + reval_state_path
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.GoldFile(gold_path_good)
 tr.StillRunningAfter = ts
