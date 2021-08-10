@@ -221,7 +221,7 @@ ParentConsistentHash::selectParent(bool first_call, ParentResult *result, Reques
   }
 
   // if the config ignore_self_detect is set to true and the host is down due to SELF_DETECT reason
-  // ignore the down status and mark it as available
+  // ignore the down status and mark it as avaialble
   if ((pRec && result->rec->ignore_self_detect) && (hst && hst->status == HOST_STATUS_DOWN)) {
     if (hst->reasons == Reason::SELF_DETECT) {
       host_stat = HOST_STATUS_UP;
@@ -306,7 +306,7 @@ ParentConsistentHash::selectParent(bool first_call, ParentResult *result, Reques
       hst       = (pRec) ? pStatus.getHostStatus(pRec->hostname) : nullptr;
       host_stat = (hst) ? hst->status : HostStatus_t::HOST_STATUS_UP;
       // if the config ignore_self_detect is set to true and the host is down due to SELF_DETECT reason
-      // ignore the down status and mark it as available
+      // ignore the down status and mark it as avaialble
       if ((pRec && result->rec->ignore_self_detect) && (hst && hst->status == HOST_STATUS_DOWN)) {
         if (hst->reasons == Reason::SELF_DETECT) {
           host_stat = HOST_STATUS_UP;
@@ -322,7 +322,7 @@ ParentConsistentHash::selectParent(bool first_call, ParentResult *result, Reques
   // ----------------------------------------------------------------------------------------------------
 
   // if the config ignore_self_detect is set to true and the host is down due to SELF_DETECT reason
-  // ignore the down status and mark it as available
+  // ignore the down status and mark it as avaialble
   if ((pRec && result->rec->ignore_self_detect) && (hst && hst->status == HOST_STATUS_DOWN)) {
     if (hst->reasons == Reason::SELF_DETECT) {
       host_stat = HOST_STATUS_UP;
