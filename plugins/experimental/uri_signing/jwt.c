@@ -76,9 +76,9 @@ jwt_delete(struct jwt *jwt)
   if (!jwt) {
     return;
   }
-
-  json_decref(jwt->aud);
-  json_decref(jwt->raw);
+  if (jwt->raw) {
+    json_decref(jwt->raw);
+  }
   free(jwt);
 }
 
