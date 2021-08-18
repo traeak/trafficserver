@@ -1,0 +1,31 @@
+meta:
+  version: "1.0"
+
+  blocks:
+  - request_base: &request_base
+      method: "GET"
+      version: "1.1"
+      scheme: "http"
+      headers:
+        fields:
+        - [ Host, example.com ]
+
+  - cookie_response: &cookie_response
+      server-response:
+        status: 200
+        reason: OK
+        headers:
+          fields:
+          - [ Content-Length, 0 ]
+          - [ Set-Cookie, test1 ]
+          - [ Set-Cookie, test2 ]
+      proxy-response:
+        status: 200
+
+sessions:
+- transactions:
+  - all: { headers: { fields: [[ uuid, cookies ]]}}
+    client-request:
+      url: /cookies
+      <<: *request_base
+    <<: *cookie_response

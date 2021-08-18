@@ -15,16 +15,21 @@
 --  limitations under the License.
 
 function send_response()
-    hdrs = ts.client_response.header_table['Set-Cookie'] or {}
+    ts.debug("in send_response")
+		ts.debug(ts.client_response.get_headers())
+    local hdrs = ts.client_response.header_table['Set-Cookie'] or {}
     local h = ''
     for k, v in pairs(hdrs) do
         h = h..v
     end
+    ts.debug(h)
+		hdrs = {}
     ts.client_response.header['X-Result'] = h
     return 0
 end
 
 function do_remap()
+    ts.debug("in do_remap")
     ts.hook(TS_LUA_HOOK_SEND_RESPONSE_HDR, send_response)
     return 0
 end
