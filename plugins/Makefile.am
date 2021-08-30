@@ -89,6 +89,7 @@ include experimental/remap_stats/Makefile.inc
 include experimental/slice/Makefile.inc
 include experimental/sslheaders/Makefile.inc
 include experimental/statichit/Makefile.inc
+include experimental/status_refetch/Makefile.inc
 include experimental/stream_editor/Makefile.inc
 include experimental/system_stats/Makefile.inc
 include experimental/traffic_dump/Makefile.inc
