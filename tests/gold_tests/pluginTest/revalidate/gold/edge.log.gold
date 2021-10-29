@@ -1,0 +1,9 @@
+http://example.com/path1 200 miss
+http://example.com/path1a 200 miss
+http://example.com/path2a 200 miss
+http://example.com/path1 200 hit-fresh
+http://example.com/path1 200 hit-stale
+http://example.com/path1 200 hit-fresh
+http://example.com/path1 200 hit-fresh
+http://example.com/path1a 200 hit-stale
+http://example.com/path2a 200 hit-fresh

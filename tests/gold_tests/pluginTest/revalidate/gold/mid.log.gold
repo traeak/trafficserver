@@ -1,0 +1,5 @@
+http://127.0.0.1:``/path1 200 TCP_MISS
+http://127.0.0.1:``/path1a 200 TCP_MISS
+http://127.0.0.1:``/path2a 200 TCP_MISS
+http://127.0.0.1:``/path1 200 TCP_REFRESH_MISS
+http://127.0.0.1:``/path1a 200 TCP_REFRESH_MISS
