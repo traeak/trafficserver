@@ -508,6 +508,13 @@ PluginVC::process_write_side()
     return;
   }
 
+  // Check the state of the other side read buffer as well as ntodo
+  int64_t other_ntodo = other_side->read_state.vio.ntodo();
+  if (other_ntodo == 0) {
+    return;
+  }
+  act_on = std::min(act_on, other_ntodo);
+
   // Other side read_state is open
   //  obtain the proper mutexes on other side
   EThread *my_ethread = mutex->thread_holding;
