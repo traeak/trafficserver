@@ -1033,11 +1033,7 @@ UnixNetVConnection::acceptEvent(int event, Event *e)
   // Send this netvc to InactivityCop.
   nh->startCop(this);
 
-  if (inactivity_timeout_in) {
-    UnixNetVConnection::set_inactivity_timeout(inactivity_timeout_in);
-  } else {
-    set_inactivity_timeout(0);
-  }
+  set_inactivity_timeout(inactivity_timeout_in);
 
   if (active_timeout_in) {
     UnixNetVConnection::set_active_timeout(active_timeout_in);
@@ -1328,15 +1324,15 @@ TS_INLINE void
 UnixNetVConnection::set_default_inactivity_timeout(ink_hrtime timeout_in)
 {
   Debug("socket", "Set default inactive timeout=%" PRId64 ", for NetVC=%p", timeout_in, this);
-  inactivity_timeout_in      = 0;
-  default_inactivity_timeout = true;
-  next_inactivity_timeout_at = ink_get_hrtime() + timeout_in;
+  inactivity_timeout_in         = 0;
+  next_inactivity_timeout_at    = ink_get_hrtime() + timeout_in;
+  default_inactivity_timeout_in = timeout_in;
 }
 
 TS_INLINE bool
 UnixNetVConnection::is_default_inactivity_timeout()
 {
-  return (default_inactivity_timeout && inactivity_timeout_in == 0);
+  return (use_default_inactivity_timeout && inactivity_timeout_in == 0);
 }
 
 /*
