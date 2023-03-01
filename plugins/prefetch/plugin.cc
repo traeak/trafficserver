@@ -20,9 +20,7 @@
  * @file plugin.cc
  * @brief traffic server plugin entry points.
  */
-
 #include <sstream>
-#include <iomanip>
 
 #include "ts/ts.h" /* ATS API */
 
@@ -33,6 +31,7 @@
 #include "fetch.h"
 #include "fetch_policy.h"
 #include "headers.h"
+#include "evaluate.h"
 
 static const char *
 getEventName(TSEvent event)
@@ -181,53 +180,6 @@ public:
 };
 
 /**
- * @brief Evaluate a math addition or subtraction expression.
- *
- * @param v string containing an expression, i.e. "3 + 4"
- * @return string containing the result, i.e. "7"
- */
-static String
-evaluate(const String &v)
-{
-  if (v.empty()) {
-    return String("");
-  }
-
-  /* Find out if width is specified (hence leading zeros are required if the width is bigger then the result width) */
-  String stmt;
-  size_t len = 0;
-  size_t pos = v.find_first_of(':');
-  if (String::npos != pos) {
-    stmt.assign(v.substr(0, pos));
-    len = getValue(v.substr(pos + 1));
-  } else {
-    stmt.assign(v);
-  }
-  PrefetchDebug("statement: '%s', formatting length: %zu", stmt.c_str(), len);
-
-  int result = 0;
-  pos        = stmt.find_first_of("+-");
-
-  if (String::npos == pos) {
-    result = getValue(stmt);
-  } else {
-    unsigned a = getValue(stmt.substr(0, pos));
-    unsigned b = getValue(stmt.substr(pos + 1));
-
-    if ('+' == stmt[pos]) {
-      result = a + b;
-    } else {
-      result = a - b;
-    }
-  }
-
-  std::ostringstream convert;
-  convert << std::setw(len) << std::setfill('0') << result;
-  PrefetchDebug("evaluation of '%s' resulted in '%s'", v.c_str(), convert.str().c_str());
-  return convert.str();
-}
-
-/**
  * @brief Expand+evaluate (in place) an expression surrounded with "{" and "}" and uses evaluate() to evaluate the math expression.
  *
  * @param s string containing an expression, i.e. "{3 + 4}"
@@ -273,8 +225,12 @@ appendCacheKey(const TSHttpTxn txnp, const TSMBuffer reqBuffer, String &key)
         TSfree(static_cast<void *>(url));
         ret = true;
       }
+    } else {
+      PrefetchDebug("Failure lookup up cache url");
     }
     TSHandleMLocRelease(reqBuffer, TS_NULL_MLOC, keyLoc);
+  } else {
+    PrefetchDebug("Failure creating url");
   }
 
   if (!ret) {
@@ -368,6 +324,106 @@ getPristineUrlPath(TSHttpTxn txnp)
 }
 
 /**
+ * @brief get the pristin URL querystring
+ *
+ * @param txnp HTTP transaction structure
+ * @return pristine URL querystring
+ */
+static String
+getPristineUrlQuery(TSHttpTxn txnp)
+{
+  String pristineQuery;
+  TSMLoc pristineUrlLoc;
+  TSMBuffer reqBuffer;
+
+  if (TS_SUCCESS == TSHttpTxnPristineUrlGet(txnp, &reqBuffer, &pristineUrlLoc)) {
+    int queryLen      = 0;
+    const char *query = TSUrlHttpQueryGet(reqBuffer, pristineUrlLoc, &queryLen);
+    if (nullptr != query) {
+      PrefetchDebug("query: '%.*s'", queryLen, query);
+      pristineQuery.assign(query, queryLen);
+    }
+    TSHandleMLocRelease(reqBuffer, TS_NULL_MLOC, pristineUrlLoc);
+  } else {
+    PrefetchError("failed to get pristine URL");
+  }
+  return pristineQuery;
+}
+
+static constexpr StringView CmcdHeader{"Cmcd-Request"};
+static constexpr StringView CmcdNorFieldPrefix{"nor="};
+static constexpr StringView CmcdNrrFieldPrefix{"nrr="};
+
+/**
+ * @brief Look for and return the nor field of any Cmcd-Request header
+ *
+ * @param txnp HTTP transaction structure
+ * @param buffer request TSMBuffer
+ * @param hdrloc request TSMLoc
+ * @return unquoted relative cmcd path from the nor field
+ *
+ * If the 'nrr' field is encountered the 'nor' field will be ignored.
+ *
+ * sample header:
+ * Cmcd-Request: mtp=103600,bl=153500,nor="14_176.mp4a"
+ */
+static String
+getCmcdNor(const TSMBuffer buffer, const TSMLoc hdrloc)
+{
+  String relpath;
+  bool hasnrr = false; // don't prefetch if range request
+
+  const TSMLoc cmcdloc = TSMimeHdrFieldFind(buffer, hdrloc, CmcdHeader.data(), CmcdHeader.length());
+  if (TS_NULL_MLOC != cmcdloc) {
+    // iterate through the fields
+    const int cnt = TSMimeHdrFieldValuesCount(buffer, hdrloc, cmcdloc);
+    for (int ind = 0; ind < cnt; ++ind) {
+      int flen               = 0;
+      const char *const fval = TSMimeHdrFieldValueStringGet(buffer, hdrloc, cmcdloc, ind, &flen);
+
+      StringView fv(fval, flen);
+      PrefetchDebug("cmcd-request field: '%.*s'", (int)fv.length(), fv.data());
+      if (0 == fv.compare(0, CmcdNrrFieldPrefix.length(), CmcdNrrFieldPrefix)) {
+        PrefetchDebug("cmcd-request nrr field encountered, skipping prefetch!");
+        hasnrr = true;
+        break;
+      }
+
+      if (0 == fv.compare(0, CmcdNorFieldPrefix.length(), CmcdNorFieldPrefix)) {
+        fv.remove_prefix(CmcdNorFieldPrefix.length());
+        if (fv.front() == '"') {
+          fv.remove_prefix(1);
+        }
+        if (fv.back() == '"') {
+          fv.remove_suffix(1);
+        }
+
+        PrefetchDebug("Extracted nor field: '%.*s'", (int)fv.length(), fv.data());
+
+        // Undo any percent encoding
+        char buf[8192];
+        size_t blen = sizeof(buf);
+        if (TS_SUCCESS == TSStringPercentDecode(fv.data(), fv.length(), buf, blen, &blen)) {
+          relpath.assign(buf, blen);
+        } else {
+          PrefetchDebug("Error percent decoding nor field: '%.*s'", (int)fv.length(), fv.data());
+        }
+      }
+    }
+    TSHandleMLocRelease(buffer, hdrloc, cmcdloc);
+  } else {
+    PrefetchDebug("No Cmcd-Request header found");
+  }
+
+  // don't prefetch if range request
+  if (hasnrr) {
+    relpath.clear();
+  }
+
+  return relpath;
+}
+
+/**
  * @brief short-cut to set the response .
  */
 TSEvent
@@ -444,19 +500,26 @@ contHandleFetch(const TSCont contp, TSEvent event, void *edata)
   TSHttpTxn txnp         = static_cast<TSHttpTxn>(edata);
   PrefetchConfig &config = data->_inst->_config;
   BgFetchState *state    = data->_inst->_state;
-  TSMBuffer reqBuffer;
-  TSMLoc reqHdrLoc;
+  TSMBuffer reqBuffer    = nullptr;
+  TSMLoc reqHdrLoc       = TS_NULL_MLOC;
 
   PrefetchDebug("event: %s (%d)", getEventName(event), event);
 
   TSEvent retEvent = TS_EVENT_HTTP_CONTINUE;
 
-  if ((event == TS_EVENT_HTTP_POST_REMAP || event == TS_EVENT_HTTP_CACHE_LOOKUP_COMPLETE ||
-       event == TS_EVENT_HTTP_SEND_RESPONSE_HDR) &&
-      TS_SUCCESS != TSHttpTxnClientReqGet(txnp, &reqBuffer, &reqHdrLoc)) {
-    PrefetchError("failed to get client request");
-    TSHttpTxnReenable(txnp, TS_EVENT_HTTP_ERROR);
-    return 0;
+  // For these cases we need to access the client request
+  switch (event) {
+  case TS_EVENT_HTTP_POST_REMAP:
+  case TS_EVENT_HTTP_CACHE_LOOKUP_COMPLETE:
+  case TS_EVENT_HTTP_SEND_RESPONSE_HDR:
+    if (TS_SUCCESS != TSHttpTxnClientReqGet(txnp, &reqBuffer, &reqHdrLoc)) {
+      PrefetchError("failed to get client request");
+      TSHttpTxnReenable(txnp, TS_EVENT_HTTP_ERROR);
+      return 0;
+    }
+    break;
+  default:
+    break;
   }
 
   switch (event) {
@@ -479,7 +542,7 @@ contHandleFetch(const TSCont contp, TSEvent event, void *edata)
         /* first-pass */
         if (!config.isExactMatch()) {
           data->_fetchable = state->acquire(data->_cachekey);
-          PrefetchDebug("request is %s fetchable", data->_fetchable ? " " : " not ");
+          PrefetchDebug("request is %s fetchable", data->_fetchable ? "" : "not");
         }
       }
     }
@@ -525,34 +588,96 @@ contHandleFetch(const TSCont contp, TSEvent event, void *edata)
     if (data->frontend()) {
       /* front-end instance */
 
-      if (data->firstPass() && data->_fetchable && !config.getNextPath().empty() && respToTriggerPrefetch(txnp)) {
-        /* Trigger all necessary background fetches based on the next path pattern */
+      const String currentPath  = getPristineUrlPath(txnp);
+      const String currentQuery = getPristineUrlQuery(txnp);
+      bool hasValidQuery        = false;
 
-        String currentPath = getPristineUrlPath(txnp);
-        if (!currentPath.empty()) {
-          unsigned total = config.getFetchCount();
-          for (unsigned i = 0; i < total; ++i) {
-            PrefetchDebug("generating prefetch request %d/%d", i + 1, total);
-            String expandedPath;
+      // If there is a --fetch-query defined in the config, and that string is found in the querystring, assume it is
+      // valid, and prefer the --fetch-query over the --fetch-path-pattern(s).
+      if (!config.getQueryKeyName().empty() && currentQuery.find(config.getQueryKeyName()) != String::npos) {
+        PrefetchDebug("Setting hasValidQuery to true");
+        hasValidQuery = true;
+      }
 
-            if (config.getNextPath().replace(currentPath, expandedPath)) {
-              PrefetchDebug("replaced: %s", expandedPath.c_str());
-              expand(expandedPath);
-              PrefetchDebug("expanded: %s", expandedPath.c_str());
+      if (data->firstPass() && data->_fetchable && respToTriggerPrefetch(txnp)) {
+        // If configured to handle Cmcd-Request nor field.
+        // This still allows other prefetch configurations to work.
+        if (config.isCmcdNor()) {
+          PrefetchDebug("Considering cmcd nor request");
 
-              BgFetch::schedule(state, config, /* askPermission */ false, reqBuffer, reqHdrLoc, txnp, expandedPath.c_str(),
-                                expandedPath.length(), data->_cachekey);
-            } else {
-              /* We should be here only if the pattern replacement fails (match already checked) */
-              PrefetchError("failed to process the pattern");
+          TSAssert(nullptr != reqBuffer);
+          TSAssert(TS_NULL_MLOC != reqHdrLoc);
 
-              /* If the first or any matches fails there must be something wrong so don't continue */
+          const String relpath = getCmcdNor(reqBuffer, reqHdrLoc);
+          if (!relpath.empty()) {
+            PrefetchDebug("Current path: '%s'", currentPath.c_str());
+            PrefetchDebug("Parsed cmcd nor relpath: '%s'", relpath.c_str());
+
+            const String::size_type lsi = currentPath.find_last_of("/");
+            const String nextPath       = currentPath.substr(0, lsi + 1) + relpath;
+
+            PrefetchDebug("Next cmcd nor path: '%s'", nextPath.c_str());
+
+            constexpr bool askPermission = false;
+            constexpr bool removeQuery   = true;
+            BgFetch::schedule(state, config, askPermission, reqBuffer, reqHdrLoc, txnp, nextPath.c_str(), nextPath.length(),
+                              data->_cachekey, removeQuery);
+          }
+        }
+
+        if (!hasValidQuery && !config.getNextPath().empty()) {
+          /* Trigger all necessary background fetches based on the next path pattern */
+
+          if (!currentPath.empty()) {
+            const unsigned total = config.getFetchCount();
+            String workingPath   = currentPath;
+            for (unsigned i = 0; i < total; ++i) {
+              PrefetchDebug("generating prefetch request %d/%d", i + 1, total);
+              String expandedPath;
+
+              if (config.getNextPath().replace(workingPath, expandedPath)) {
+                PrefetchDebug("replaced: %s", expandedPath.c_str());
+                expand(expandedPath);
+                PrefetchDebug("expanded: %s cachekey: %s", expandedPath.c_str(), data->_cachekey.c_str());
+
+                BgFetch::schedule(state, config, /* askPermission */ false, reqBuffer, reqHdrLoc, txnp, expandedPath.c_str(),
+                                  expandedPath.length(), data->_cachekey);
+              } else {
+                /* We should be here only if the pattern replacement fails (match already checked) */
+                PrefetchError("failed to process the pattern");
+
+                /* If the first or any matches fails there must be something wrong so don't continue */
+                break;
+              }
+              workingPath.assign(expandedPath);
+            }
+          } else {
+            PrefetchDebug("failed to get current path");
+          }
+        } else if (hasValidQuery) {
+          /* Trigger all necessary background fetches based on the query string(s) */
+
+          PrefetchDebug("currentQuery: %s", currentQuery.c_str());
+          const size_t lastSlashIndex = currentPath.find_last_of("/");
+          const size_t keyLen         = config.getQueryKeyName().size();
+          unsigned done               = 1;
+          std::istringstream cStringStream(currentQuery);
+          String param;
+
+          while (getline(cStringStream, param, '&')) {
+            if (param.find(config.getQueryKeyName()) != 0) {
+              continue;
+            }
+            if (config.getFetchCount() < done++) {
               break;
             }
-            currentPath.assign(expandedPath);
+            String nextFile = param.substr(keyLen + 1); // +1 for the '='
+            String nextPath = currentPath.substr(0, lastSlashIndex + 1) + nextFile;
+
+            PrefetchDebug("nextPath %s, cacheKey %s", nextPath.c_str(), data->_cachekey.c_str());
+            BgFetch::schedule(state, config, /* askPermission */ false, reqBuffer, reqHdrLoc, txnp, nextPath.c_str(),
+                              nextPath.length(), data->_cachekey);
           }
-        } else {
-          PrefetchDebug("failed to get current path");
         }
       }
     }
@@ -568,8 +693,9 @@ contHandleFetch(const TSCont contp, TSEvent event, void *edata)
         TSHttpHdrReasonSet(bufp, hdrLoc, reason, reasonLen);
         PrefetchDebug("set response: %d %.*s '%s'", data->_status, reasonLen, reason, data->_body.c_str());
 
-        char *buf = static_cast<char *>(TSmalloc(data->_body.length() + 1));
-        sprintf(buf, "%s", data->_body.c_str());
+        size_t bufsize = data->_body.length() + 1;
+        char *buf      = static_cast<char *>(TSmalloc(bufsize));
+        memcpy(buf, data->_body.c_str(), bufsize);
         TSHttpTxnErrorBodySet(txnp, buf, strlen(buf), nullptr);
 
         setHeader(bufp, hdrLoc, TS_MIME_FIELD_CACHE_CONTROL, TS_MIME_LEN_CACHE_CONTROL, TS_HTTP_VALUE_NO_STORE,
@@ -703,7 +829,7 @@ TSRemapDoRemap(void *instance, TSHttpTxn txnp, TSRemapRequestInfo *rri)
 
       /* Make sure we handle only URLs that match the path pattern on the front-end + first-pass, cancel otherwise */
       bool handleFetch = true;
-      if (front && firstPass) {
+      if (front && firstPass && !config.isCmcdNor()) {
         /* Front-end plug-in instance + first pass. */
         if (config.getNextPath().empty()) {
           /* No next path pattern specified then pass this request untouched. */
@@ -725,6 +851,12 @@ TSRemapDoRemap(void *instance, TSHttpTxn txnp, TSRemapRequestInfo *rri)
             }
           } else {
             PrefetchDebug("failed to get path to (pre)match");
+          }
+
+          String queryKey = config.getQueryKeyName();
+          if (!queryKey.empty()) {
+            PrefetchDebug("handling for query-key: %s", queryKey.c_str());
+            handleFetch = true;
           }
         }
       }

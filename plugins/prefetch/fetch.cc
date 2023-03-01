@@ -325,7 +325,7 @@ BgFetchState::uniqueRelease(const String &url)
   permitted     = _unique->release(url);
   TSMutexUnlock(_lock);
 
-  TSAssert(cachedCounter < 0);
+  PrefetchDebug("cachedCounter: %zd", cachedCounter);
 
   /* Update the metrics, no need to lock? */
   if (permitted) {
@@ -409,11 +409,12 @@ BgFetch::~BgFetch()
 
 bool
 BgFetch::schedule(BgFetchState *state, const PrefetchConfig &config, bool askPermission, TSMBuffer requestBuffer,
-                  TSMLoc requestHeaderLoc, TSHttpTxn txnp, const char *path, size_t pathLen, const String &cachekey)
+                  TSMLoc requestHeaderLoc, TSHttpTxn txnp, const char *path, size_t pathLen, const String &cachekey,
+                  bool removeQuery)
 {
   bool ret       = false;
   BgFetch *fetch = new BgFetch(state, config, askPermission);
-  if (fetch->init(requestBuffer, requestHeaderLoc, txnp, path, pathLen, cachekey)) {
+  if (fetch->init(requestBuffer, requestHeaderLoc, txnp, path, pathLen, cachekey, removeQuery)) {
     fetch->schedule();
     ret = true;
   } else {
@@ -451,7 +452,7 @@ BgFetch::addBytes(int64_t b)
  */
 bool
 BgFetch::init(TSMBuffer reqBuffer, TSMLoc reqHdrLoc, TSHttpTxn txnp, const char *fetchPath, size_t fetchPathLen,
-              const String &cachekey)
+              const String &cachekey, bool removeQuery)
 {
   TSAssert(TS_NULL_MLOC == _headerLoc);
   TSAssert(TS_NULL_MLOC == _urlLoc);
@@ -504,6 +505,15 @@ BgFetch::init(TSMBuffer reqBuffer, TSMLoc reqHdrLoc, TSHttpTxn txnp, const char 
   if (nullptr == path) {
     PrefetchError("failed to get a URL path");
     return false;
+  }
+
+  /* Remove the query string */
+  if (removeQuery) {
+    if (TS_SUCCESS == TSUrlHttpQuerySet(_mbuf, _urlLoc, "", 0)) {
+      PrefetchDebug("original query string removed");
+    } else {
+      PrefetchError("failed to remove original query string");
+    }
   }
 
   /* Now set or remove the prefetch API header */
