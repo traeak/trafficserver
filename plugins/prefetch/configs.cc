@@ -54,27 +54,30 @@ isTrue(const char *arg)
 bool
 PrefetchConfig::init(int argc, char *argv[])
 {
-  static const struct option longopt[] = {{const_cast<char *>("front"), optional_argument, nullptr, 'f'},
-                                          {const_cast<char *>("api-header"), optional_argument, nullptr, 'h'},
-                                          {const_cast<char *>("next-header"), optional_argument, nullptr, 'n'},
-                                          {const_cast<char *>("fetch-policy"), optional_argument, nullptr, 'p'},
-                                          {const_cast<char *>("fetch-count"), optional_argument, nullptr, 'c'},
-                                          {const_cast<char *>("fetch-path-pattern"), optional_argument, nullptr, 'e'},
-                                          {const_cast<char *>("fetch-query"), optional_argument, nullptr, 'q'},
-                                          {const_cast<char *>("fetch-max"), optional_argument, nullptr, 'x'},
-                                          {const_cast<char *>("replace-host"), optional_argument, nullptr, 'r'},
-                                          {const_cast<char *>("name-space"), optional_argument, nullptr, 's'},
-                                          {const_cast<char *>("metrics-prefix"), optional_argument, nullptr, 'm'},
-                                          {const_cast<char *>("exact-match"), optional_argument, nullptr, 'y'},
-                                          {const_cast<char *>("log-name"), optional_argument, nullptr, 'l'},
-                                          {nullptr, 0, nullptr, 0}};
+  static const struct option longopt[] = {
+    {const_cast<char *>("front"),              optional_argument, nullptr, 'f'},
+    {const_cast<char *>("api-header"),         optional_argument, nullptr, 'h'},
+    {const_cast<char *>("cmcd-nor"),           optional_argument, nullptr, 'd'},
+    {const_cast<char *>("next-header"),        optional_argument, nullptr, 'n'},
+    {const_cast<char *>("fetch-policy"),       optional_argument, nullptr, 'p'},
+    {const_cast<char *>("fetch-count"),        optional_argument, nullptr, 'c'},
+    {const_cast<char *>("fetch-path-pattern"), optional_argument, nullptr, 'e'},
+    {const_cast<char *>("fetch-query"),        optional_argument, nullptr, 'q'},
+    {const_cast<char *>("fetch-max"),          optional_argument, nullptr, 'x'},
+    {const_cast<char *>("replace-host"),       optional_argument, nullptr, 'r'},
+    {const_cast<char *>("name-space"),         optional_argument, nullptr, 's'},
+    {const_cast<char *>("metrics-prefix"),     optional_argument, nullptr, 'm'},
+    {const_cast<char *>("exact-match"),        optional_argument, nullptr, 'y'},
+    {const_cast<char *>("log-name"),           optional_argument, nullptr, 'l'},
+    {nullptr,                                  0,                 nullptr, 0  },
+  };
 
   bool status = true;
   optind      = 0;
 
   /* argv contains the "to" and "from" URLs. Skip the first so that the second one poses as the program name. */
-  argc--;
-  argv++;
+  --argc;
+  ++argv;
 
   for (;;) {
     int opt;
@@ -93,6 +96,10 @@ PrefetchConfig::init(int argc, char *argv[])
 
     case 'h': /* --api-header */
       setApiHeader(optarg);
+      break;
+
+    case 'd': /* --cmcd-nor */
+      _cmcd_nor = ::isTrue(optarg);
       break;
 
     case 'n': /* --next-header */
@@ -165,6 +172,7 @@ PrefetchConfig::finalize()
   PrefetchDebug("front-end: %s", (_front ? "true" : "false"));
   PrefetchDebug("exact match: %s", (_exactMatch ? "true" : "false"));
   PrefetchDebug("query key: %s", _queryKey.c_str());
+  PrefetchDebug("cncd-nor: %s", (_front ? "true" : "false"));
   PrefetchDebug("API header name: %s", _apiHeader.c_str());
   PrefetchDebug("next object header name: %s", _nextHeader.c_str());
   PrefetchDebug("fetch policy parameters: %s", _fetchPolicy.c_str());
