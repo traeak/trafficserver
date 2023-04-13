@@ -618,10 +618,21 @@ contHandleFetch(const TSCont contp, TSEvent event, void *edata)
 
             PrefetchDebug("Next cmcd nor path: '%s'", nextPath.c_str());
 
-            constexpr bool askPermission = false;
-            constexpr bool removeQuery   = true;
-            BgFetch::schedule(state, config, askPermission, reqBuffer, reqHdrLoc, txnp, nextPath.c_str(), nextPath.length(),
-                              data->_cachekey, removeQuery);
+            String pristine = currentPath;
+            if (!currentQuery.empty()) {
+              pristine.push_back('?');
+              pristine.append(currentQuery);
+            }
+            PrefetchDebug("Pristine url: '%s'", pristine.c_str());
+
+            if (pristine != nextPath) {
+              constexpr bool askPermission = false;
+              constexpr bool removeQuery   = true;
+              BgFetch::schedule(state, config, askPermission, reqBuffer, reqHdrLoc, txnp, nextPath.c_str(), nextPath.length(),
+                                data->_cachekey, removeQuery);
+            } else {
+              PrefetchDebug("Skipping identical pristine path/query");
+            }
           }
         }
 

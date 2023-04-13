@@ -290,6 +290,13 @@ tr.Processes.Default.Command = (
 )
 tr.Processes.Default.ReturnCode = 0
 
+# ensure duplicate is rejected (pristine same as prefetched)
+tr = Test.AddTestRun()
+tr.Processes.Default.Command = (
+    f"curl --verbose --proxy 127.0.0.1:{ts0.Variables.port} \'http://ts0/tests/{query_pf_name}\' -H\'{query_pf_perc_header}\'"
+)
+tr.Processes.Default.ReturnCode = 0
+
 # ensure root path prefetch works
 tr = Test.AddTestRun()
 tr.Processes.Default.Command = (
