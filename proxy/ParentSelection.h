@@ -215,7 +215,8 @@ struct ParentResult {
   bool
   is_some() const
   {
-    if (rec == nullptr) {
+    // strategies doesn't set 'rec' but does set hostname
+    if (nullptr == rec && nullptr == hostname) {
       // If we don't have a result, we either haven't done a parent
       // lookup yet (PARENT_UNDEFINED), or the lookup didn't match
       // anything (PARENT_DIRECT).
