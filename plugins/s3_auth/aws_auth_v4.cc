@@ -399,6 +399,15 @@ getCanonicalRequestSha256Hash(TsInterface &api, bool signPayload, const StringSe
     }
   }
 
+  static char const *const debugtag = "s3_auth";
+  if (TSIsDebugTagSet(debugtag)) {
+    TSDebug(debugtag, "Path to sign: %s", canonicalUri.c_str());
+    TSDebug(debugtag, "Header/Value(s) to sign:");
+    for (const auto &it : headersMap) {
+      TSDebug(debugtag, "%s: %s", it.first.c_str(), it.second.c_str());
+    }
+  }
+
   for (const auto &it : signedHeadersSet) {
     sha256Update(&canonicalRequestSha256Ctx, it);
     sha256Update(&canonicalRequestSha256Ctx, ":");
