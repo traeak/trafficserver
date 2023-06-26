@@ -343,6 +343,7 @@ TSRemapDoRemap(void *instance, TSHttpTxn txnp, TSRemapRequestInfo *rri)
   return TSREMAP_NO_REMAP;
 }
 
+/* The below causes ats92 to core dump.
 namespace
 {
 class Cleanup
@@ -366,3 +367,4 @@ public:
 Cleanup cleanup;
 
 } // end anonymous namespace
+*/
