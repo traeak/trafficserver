@@ -146,52 +146,84 @@ ServerSessionPool::acquireSession(sockaddr const *addr, CryptoHash const &hostna
   HSMresult_t zret = HSM_NOT_FOUND;
   to_return        = nullptr;
 
+  // use the nethandler for same thread check
+  EThread *const ethread = this_ethread();
+
+	int index = 0;
+	constexpr int threshcnt = 4; // threshold for same thread check
+
   if ((TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTONLY & match_style) && !(TS_SERVER_SESSION_SHARING_MATCH_MASK_IP & match_style)) {
     Debug("http_ss", "Search for host name only not IP.  Pool size %zu", m_fqdn_pool.count());
     // This is broken out because only in this case do we check the host hash first. The range must be checked
     // to verify an upstream that matches port and SNI name is selected. Walk backwards to select oldest.
-    in_port_t port = ats_ip_port_cast(addr);
-    auto first     = m_fqdn_pool.find(hostname_hash);
-    while (first != m_fqdn_pool.end() && first->hostname_hash == hostname_hash) {
-      Debug("http_ss", "Compare port 0x%x against 0x%x", port, ats_ip_port_cast(first->get_remote_addr()));
-      if (port == ats_ip_port_cast(first->get_remote_addr()) &&
-          (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_SNI) || validate_sni(sm, first->get_netvc())) &&
-          (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTSNISYNC) || validate_host_sni(sm, first->get_netvc())) &&
-          (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_CERT) || validate_cert(sm, first->get_netvc()))) {
-        zret = HSM_DONE;
+    in_port_t const port = ats_ip_port_cast(addr);
+    auto iter = m_fqdn_pool.find(hostname_hash);
+    while (iter != m_fqdn_pool.end() && iter->hostname_hash == hostname_hash) {
+      Debug("http_ss", "Compare port 0x%x against 0x%x", port, ats_ip_port_cast(iter->get_remote_addr()));
+			auto *const netvc = iter->get_netvc();
+      if (port == ats_ip_port_cast(iter->get_remote_addr()) &&
+          (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_SNI) || validate_sni(sm, netvc)) &&
+          (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTSNISYNC) || validate_host_sni(sm, netvc)) &&
+          (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_CERT) || validate_cert(sm, netvc))) {
+        // Check if on the same thread
+        if (ethread == netvc->thread) {
+          Debug("http_ss", "Session found on the same thread");
+          to_return = iter;
+          break;
+        } else if (nullptr == to_return) {
+          to_return = iter;
+        }
+      }
+
+      // give up on same thread check
+      if (threshcnt < index && nullptr != to_return) {
         break;
       }
-      ++first;
+      ++iter;
+			++index;
     }
-    if (zret == HSM_DONE) {
-      to_return = first;
+    if (nullptr != to_return) {
+      zret = HSM_DONE;
       if (!to_return->is_multiplexing()) {
         this->removeSession(to_return);
       }
-    } else if (first != m_fqdn_pool.end()) {
+    } else if (iter != m_fqdn_pool.end()) {
       Debug("http_ss", "Failed find entry due to name mismatch %s", sm->t_state.current.server->name);
     }
   } else if (TS_SERVER_SESSION_SHARING_MATCH_MASK_IP & match_style) { // matching is not disabled.
-    auto first = m_ip_pool.find(addr);
+    auto iter = m_ip_pool.find(addr);
     // The range is all that is needed in the match IP case, otherwise need to scan for matching fqdn
     // And matches the other constraints as well
     // Note the port is matched as part of the address key so it doesn't need to be checked again.
     if (match_style & (~TS_SERVER_SESSION_SHARING_MATCH_MASK_IP)) {
-      while (first != m_ip_pool.end() && ats_ip_addr_port_eq(first->get_remote_addr(), addr)) {
-        if ((!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTONLY) || first->hostname_hash == hostname_hash) &&
-            (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_SNI) || validate_sni(sm, first->get_netvc())) &&
-            (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTSNISYNC) || validate_host_sni(sm, first->get_netvc())) &&
-            (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_CERT) || validate_cert(sm, first->get_netvc()))) {
-          zret = HSM_DONE;
-          break;
+      while (iter != m_ip_pool.end() && ats_ip_addr_port_eq(iter->get_remote_addr(), addr)) {
+			  auto *const netvc = iter->get_netvc();
+        if ((!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTONLY) || iter->hostname_hash == hostname_hash) &&
+            (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_SNI) || validate_sni(sm, netvc)) &&
+            (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTSNISYNC) || validate_host_sni(sm, netvc)) &&
+            (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_CERT) || validate_cert(sm, netvc))) {
+					if (netvc->thread == ethread) {
+					  to_return = iter;
+						break;
+					} else if (nullptr == to_return) {
+					  to_return = iter;
+					}
         }
-        ++first;
+
+        // give up on same thread check
+				if (threshcnt < index && nullptr != to_return) {
+				  break;
+				}
+
+        ++iter;
+				++index;
       }
-    } else if (first != m_ip_pool.end()) {
-      zret = HSM_DONE;
+    } else if (iter != m_ip_pool.end()) {
+      to_return = iter;
     }
-    if (zret == HSM_DONE) {
-      to_return = first;
+
+    if (nullptr != to_return) {
+		  zret = HSM_DONE;
       if (!to_return->is_multiplexing()) {
         this->removeSession(to_return);
       }
