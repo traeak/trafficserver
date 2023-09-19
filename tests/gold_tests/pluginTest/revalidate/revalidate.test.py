@@ -110,7 +110,9 @@ Test.Setup.Copy("metrics.sh")
 revalidate_conf_path = os.path.join(edge.Variables.CONFIGDIR, 'revalidate.conf')
 curl_and_args = f'curl -s -D - -v -H "x-debug: x-cache" -x 127.0.0.1:{edge.Variables.port}'
 
-path1_rule = 'path1 {} STALE\n'.format(int(time.time()) + 600)
+# regex expiry version
+timenow = time.time()
+path1_rule = 'path1 {} {}\n'.format(int(timenow) + 600, int(timenow * 1000))
 
 # Define first revision for when trafficserver starts
 edge.Disk.File(revalidate_conf_path, typename="ats:config").AddLine(
@@ -204,9 +206,10 @@ ps = tr.Processes.Default
 # of the new config file versus the old is greater than the granularity
 # of the time stamp used. (The config file write happens after the delay.)
 tr.DelayStart = 1
+timenow = time.time()
 tr.Disk.File(revalidate_conf_path, typename="ats:config").AddLines([
     path1_rule,
-    'path2 {} STALE\n'.format(int(time.time()) + 700)
+    'path2 {} {}'.format(int(timenow) + 700, int(timenow * 1000))
 ])
 tr.StillRunningAfter = edge
 tr.StillRunningAfter = mid
@@ -245,9 +248,10 @@ ps = tr.Processes.Default
 # of the new config file versus the old is greater than the granularity
 # of the time stamp used. (The config file write happens after the delay.)
 tr.DelayStart = 1
+timenow = time.time()
 tr.Disk.File(revalidate_conf_path, typename="ats:config").AddLines([
     path1_rule,
-    'path2 {} STALE\n'.format(int(time.time()) - 100),
+    'path2 {} {}\n'.format(int(timenow) - 100, int(timenow * 1000))
 ])
 tr.StillRunningAfter = edge
 tr.StillRunningAfter = mid

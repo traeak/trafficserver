@@ -23,27 +23,24 @@
 
 #include "ts/ts.h"
 #include "ts/remap.h"
-#include "tscore/ink_hrtime.h"
+#include "ts/experimental.h"
 #include "regex.h"
 
+#include <array>
 #include <atomic>
+#include <charconv>
 #include <cinttypes>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <getopt.h>
 #include <limits.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-
-#include <algorithm>
-#include <charconv>
-#include <filesystem>
-#include <iostream>
 #include <map>
 #include <memory>
-#include <set>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <vector>
 
 #define __FILENAME__        (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
@@ -61,82 +58,44 @@ constexpr char const *const STATE_SUBDIR = "var/trafficserver";
 constexpr char const *const PASS_HEADER  = "X-Revalidate-Rule";
 constexpr int const OVEC_SIZE            = 30;
 
-enum RuleType { STALE = 0, MISS, UNKNOWN };
-constexpr std::array<std::string_view, 2> RuleStrings = {
-  {
-   "MISS", "STALE",
-   }
-};
-
-inline std::string_view
-strForType(RuleType const type)
-{
-  return RuleStrings[static_cast<int>(type)];
-}
-
 // stats management
-constexpr char const *const stat_name_stale = "plugin.revalidate.stale";
-constexpr char const *const stat_name_miss  = "plugin.revalidate.miss";
+constexpr char const *const stat_name_count = "plugin.revalidate_count";
 
-static int stat_id_stale = TS_ERROR;
-static int stat_id_miss  = TS_ERROR;
+static int stat_id_count = TS_ERROR;
 
 void
 create_stats()
 {
-  if (TS_ERROR == stat_id_stale && TS_ERROR == TSStatFindName(stat_name_stale, &stat_id_stale)) {
-    stat_id_stale = TSStatCreate(stat_name_stale, TS_RECORDDATATYPE_INT, TS_STAT_NON_PERSISTENT, TS_STAT_SYNC_COUNT);
-    if (TS_ERROR != stat_id_stale) {
-      TSDebug(PLUGIN_NAME, "Created stat '%s'", stat_name_stale);
-    }
-  }
-
-  if (TS_ERROR == stat_id_miss && TS_ERROR == TSStatFindName(stat_name_miss, &stat_id_miss)) {
-    stat_id_miss = TSStatCreate(stat_name_miss, TS_RECORDDATATYPE_INT, TS_STAT_NON_PERSISTENT, TS_STAT_SYNC_COUNT);
-    if (TS_ERROR != stat_id_miss) {
-      TSDebug(PLUGIN_NAME, "Created stat '%s'", stat_name_miss);
+  if (TS_ERROR == stat_id_count && TS_ERROR == TSStatFindName(stat_name_count, &stat_id_count)) {
+    stat_id_count = TSStatCreate(stat_name_count, TS_RECORDDATATYPE_INT, TS_STAT_NON_PERSISTENT, TS_STAT_SYNC_COUNT);
+    if (TS_ERROR != stat_id_count) {
+      TSDebug(PLUGIN_NAME, "Created stat '%s'", stat_name_count);
     }
   }
 }
 
 static void
-increment_stat(TSCacheLookupResult const result)
+increment_stat()
 {
-  switch (result) {
-  case TS_CACHE_LOOKUP_MISS:
-    if (TS_ERROR != stat_id_miss) {
-      TSStatIntIncrement(stat_id_miss, 1);
-      TSDebug(PLUGIN_NAME, "Incrementing stat '%s'", stat_name_miss);
-    }
-    break;
-  case TS_CACHE_LOOKUP_HIT_STALE:
-    if (TS_ERROR != stat_id_stale) {
-      TSStatIntIncrement(stat_id_stale, 1);
-      TSDebug(PLUGIN_NAME, "Incrementing stat '%s'", stat_name_stale);
-    }
-    break;
-  default:
-    break;
+  if (TS_ERROR != stat_id_count) {
+    TSStatIntIncrement(stat_id_count, 1);
+    TSDebug(PLUGIN_NAME, "Incrementing stat '%s'", stat_name_count);
   }
 }
 
 struct Rule {
-  // static inline Regex const rule_re{R"(^([^#].+?)\s+(\d+)\s+(\w+)\s*$)"};
-  // static inline Regex const rule_re{"^([^#].+?)\\s+(\\d+)\\s+(\\w+)\\s*$"};
   std::string regex_text{};
   Regex regex{};
+  int64_t version{0}; // ms
   time_t epoch{0};
   time_t expiry{0};
-  TSCacheLookupResult new_result{TS_CACHE_LOOKUP_HIT_STALE};
-  RuleType type{UNKNOWN};
 
   Rule()                      = default;
   Rule(Rule &&orig)           = default;
   Rule &operator=(Rule &&rhs) = default;
   ~Rule()                     = default;
 
-  Rule(Rule const &orig)
-    : regex_text(orig.regex_text), epoch(orig.epoch), expiry(orig.expiry), new_result(orig.new_result), type(orig.type)
+  Rule(Rule const &orig) : regex_text(orig.regex_text), epoch(orig.epoch), expiry(orig.expiry)
   {
     this->regex.compile(regex_text.c_str());
   }
@@ -161,7 +120,7 @@ struct Rule {
   inline bool
   is_valid() const
   {
-    return RuleType::UNKNOWN != this->type && this->regex.is_valid();
+    return !this->regex_text.empty() && this->regex.is_valid() && 0 < version && 0 < expiry && 0 < epoch;
   }
 
   inline bool
@@ -176,11 +135,17 @@ struct Rule {
     return this->expiry < timenow;
   }
 
-  static Rule from_line(std::string_view const line, time_t const epoch);
+  // load from string
+  static Rule from_string(std::string_view const str, time_t const epoch);
 
+  // loadable string
   std::string to_string() const;
+
+  // informational string (debug)
+  std::string info_string() const;
 };
 
+// case insensitive compare
 inline bool
 iequals(std::string_view const lhs, std::string_view const rhs)
 {
@@ -193,6 +158,7 @@ struct PluginState {
   std::string pass_header{PASS_HEADER};
   time_t rule_path_time{0};
   time_t min_expiry{0};
+  int64_t version{0};
   // sorted by regex_text
   std::shared_ptr<std::vector<Rule>> rules{std::make_shared<std::vector<Rule>>()};
   TSTextLogObject log{nullptr};
@@ -216,97 +182,89 @@ struct PluginState {
   void log_config(std::shared_ptr<std::vector<Rule>> const &newrules) const;
 };
 
-constexpr int FIELD_REG  = 0;
-constexpr int FIELD_EXP  = 1;
-constexpr int FIELD_TYPE = 2;
-
-bool
-split(std::string_view lv, std::array<std::string_view, 3> *const fields)
+template <std::size_t Dim>
+std::size_t
+split(std::string_view str, std::array<std::string_view, Dim> *const fields)
 {
-  using view = std::string_view;
+  std::size_t aind = 0;
 
-  view::size_type ind = lv.find_first_of(' ');
-  if (view::npos == ind || 0 == ind) {
-    return false;
+  using view           = std::string_view;
+  constexpr char delim = ' ';
+
+  for (view::size_type ind = 0; ind < str.size(); ++ind) {
+    view::size_type const beg = str.find_first_not_of(delim);
+    str                       = str.substr(beg);
+    if (view::npos != beg) {
+      view::size_type const end = str.find_first_of(delim);
+      (*fields)[aind++]         = str.substr(0, end);
+      if (fields->size() <= aind) {
+        break;
+      }
+      str = str.substr(end + 1);
+    }
   }
 
-  (*fields)[FIELD_REG] = lv.substr(0, ind);
-
-  lv  = lv.substr(ind);
-  ind = lv.find_first_not_of(' ');
-  if (view::npos == ind) {
-    return false;
-  }
-  lv = lv.substr(ind);
-
-  ind = lv.find_first_of(' ');
-  if (view::npos == ind) {
-    return false;
-  }
-
-  (*fields)[FIELD_EXP] = lv.substr(0, ind);
-
-  lv  = lv.substr(ind);
-  ind = lv.find_first_not_of(' ');
-  if (view::npos == ind) {
-    return false;
-  }
-
-  lv                    = lv.substr(ind);
-  (*fields)[FIELD_TYPE] = lv.substr(0, lv.find_first_of(' '));
-
-  return true;
+  return aind;
 }
 
+constexpr int FIELD_REG = 0;
+constexpr int FIELD_EXP = 1;
+constexpr int FIELD_VER = 2;
+
 Rule
-Rule::from_line(std::string_view const line, time_t const timenow)
+Rule::from_string(std::string_view const str, time_t const timenow)
 {
   Rule rule;
 
-  DEBUG_LOG("Parsing line: '%.*s'", (int)line.length(), line.data());
+  DEBUG_LOG("Parsing string: '%.*s'", (int)str.size(), str.data());
 
   std::array<std::string_view, 3> fields;
-  bool res = split(line, &fields);
-  if (!res) {
-    DEBUG_LOG("Unable to field parse '%.*s'", (int)line.length(), line.data());
+  std::size_t const nfields = split(str, &fields);
+  if (nfields != fields.size()) {
+    DEBUG_LOG("Unable to split '%.*s'", (int)str.size(), str.data());
     return rule;
   }
 
-  std::string regstr{fields[FIELD_REG]};
-  if (!rule.regex.compile(regstr.c_str())) {
-    DEBUG_LOG("Unable to compile regex: '%s'", regstr.c_str());
+  rule.regex_text = std::string{fields[FIELD_REG]};
+  if (!rule.regex.compile(rule.regex_text.c_str())) {
+    DEBUG_LOG("Unable to compile regex: '%s'", rule.regex_text.c_str());
     return rule;
   }
 
-  time_t expiry             = -1;
   std::string_view const ev = fields[FIELD_EXP];
-  std::from_chars(ev.data(), ev.data() + ev.length(), expiry);
-  if (expiry < 0) {
+  std::from_chars(ev.data(), ev.data() + ev.length(), rule.expiry);
+  if (rule.expiry <= 0) {
     DEBUG_LOG("Unable to parse time from: '%.*s'", (int)ev.length(), ev.data());
     return rule;
   }
 
-  std::string_view const tv = fields[FIELD_TYPE];
-  size_t rind               = 0;
-  while (rind < RuleStrings.size()) {
-    if (iequals(RuleStrings[rind], tv)) {
-      break;
-    }
-    ++rind;
-  }
-
-  if (RuleStrings.size() <= rind) {
-    DEBUG_LOG("Unable to parse type from: '%.*s'", (int)tv.length(), tv.data());
+  std::string_view const sver = fields[FIELD_VER];
+  std::from_chars(sver.data(), sver.data() + sver.length(), rule.version);
+  if (rule.version <= 0) {
+    DEBUG_LOG("Unable to parse version from: '%.*s'", (int)sver.size(), sver.data());
     return rule;
   }
 
-  rule.regex_text = std::move(regstr);
-  rule.expiry     = expiry;
-  rule.epoch      = timenow;
-  rule.new_result = static_cast<TSCacheLookupResult>(rind);
-  rule.type       = static_cast<RuleType>(rind);
+  rule.epoch = timenow;
 
   return rule;
+}
+
+std::string
+Rule::info_string() const
+{
+  std::string res;
+
+  res.append("regex: ");
+  res.append(this->regex_text);
+  res.append(" epoch: ");
+  res.append(std::to_string(this->epoch));
+  res.append(" expiry: ");
+  res.append(std::to_string(this->expiry));
+  res.append(" version: ");
+  res.append(std::to_string(this->version));
+
+  return res;
 }
 
 std::string
@@ -318,7 +276,7 @@ Rule::to_string() const
   res.push_back(' ');
   res.append(std::to_string(this->expiry));
   res.push_back(' ');
-  res.append(strForType(this->type));
+  res.append(std::to_string(this->version));
 
   return res;
 }
@@ -333,12 +291,10 @@ PluginState::log_config(std::shared_ptr<std::vector<Rule>> const &newrules) cons
 
   if (rules) {
     for (Rule const &rule : *newrules) {
-      std::string_view const typestr = strForType(rule.type);
-      TSDebug(PLUGIN_NAME, "line: '%s' epoch: %ju expiry: %ju result: '%.*s'", rule.regex_text.c_str(), (uintmax_t)rule.epoch,
-              (uintmax_t)rule.expiry, (int)typestr.length(), typestr.data());
+      std::string const info = rule.info_string();
+      TSDebug(PLUGIN_NAME, info.c_str());
       if (nullptr != log) {
-        TSTextLogObjectWrite(log, "line: '%s' epoch: %ju expiry: %ju result: '%.*s'", rule.regex_text.c_str(),
-                             (uintmax_t)rule.epoch, (uintmax_t)rule.expiry, (int)typestr.length(), typestr.data());
+        TSTextLogObjectWrite(log, info.c_str());
       }
     }
   } else {
@@ -431,7 +387,7 @@ load_rules_from(std::filesystem::path const &path, time_t const timenow)
     ++lineno;
     line[strcspn(line, "\r\n")] = '\0';
     if (0 < strlen(line) && '#' != line[0]) {
-      Rule rnew = Rule::from_line(line, timenow);
+      Rule rnew = Rule::from_string(line, timenow);
       if (rnew.is_valid()) {
         loaded[rnew.regex_text] = std::move(rnew);
       } else {
@@ -453,7 +409,8 @@ load_rules_from(std::filesystem::path const &path, time_t const timenow)
     if (!rule.expired(timenow)) {
       rules->push_back(std::move(elem.second));
     } else {
-      DEBUG_LOG("Not adding expired rule '%s', rule: %jd, time: %jd", rule.regex_text.c_str(), rule.expiry, timenow);
+      DEBUG_LOG("Not adding expired rule regex: '%s', version: %jd rule: %jd, time: %jd", rule.regex_text.c_str(), rule.version,
+                (intmax_t)rule.expiry, (intmax_t)timenow);
     }
   }
 
@@ -662,7 +619,7 @@ main_handler(TSCont cont, TSEvent event, void *edata)
     DEBUG_LOG("Rule from header: %s", ruleline.c_str());
     std::string const decoded = percent_decode(ruleline);
     DEBUG_LOG("Decoded from header: %s", decoded.c_str());
-    newrule = Rule::from_line(decoded, timenow);
+    newrule = Rule::from_string(decoded, timenow);
     if (newrule.is_valid()) { // may be expired
       rules                                       = std::atomic_load(&(pstate->rules));
       std::shared_ptr<std::vector<Rule>> newrules = merge_new_rule(rules, &newrule);
@@ -702,8 +659,8 @@ main_handler(TSCont cont, TSEvent event, void *edata)
               DEBUG_LOG("url to evaluate: '%.*s'", url_len, url);
 
               if (newrule.matches(url, url_len)) {
-                TSHttpTxnCacheLookupStatusSet(txnp, newrule.new_result);
-                increment_stat(newrule.new_result);
+                TSHttpTxnCacheLookupStatusSet(txnp, TS_CACHE_LOOKUP_HIT_STALE);
+                increment_stat();
                 DEBUG_LOG("Forced revalidate - %.*s", url_len, url);
                 matched = true;
               }
@@ -741,7 +698,7 @@ main_handler(TSCont cont, TSEvent event, void *edata)
               }
 
               if (rule.matches(url, url_len)) {
-                TSHttpTxnCacheLookupStatusSet(txnp, rule.new_result);
+                TSHttpTxnCacheLookupStatusSet(txnp, TS_CACHE_LOOKUP_HIT_STALE);
                 DEBUG_LOG("Forced revalidate - %.*s", url_len, url);
 
                 // Set/Replace revalidate header
@@ -894,7 +851,7 @@ process_rules(PluginState *const pstate)
   return true;
 }
 
-extern "C" tsapi int
+int
 rule_handler(TSCont cont, TSEvent event, void *data)
 {
   if (TS_EVENT_LIFECYCLE_MSG == event) {
@@ -912,7 +869,7 @@ rule_handler(TSCont cont, TSEvent event, void *data)
 
 } // namespace
 
-extern "C" tsapi void
+void
 TSPluginInit(int argc, char const *argv[])
 {
   DEBUG_LOG("Starting plugin init");
