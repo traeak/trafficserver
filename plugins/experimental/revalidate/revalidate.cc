@@ -189,7 +189,7 @@ split(std::string_view str, std::array<std::string_view, Dim> *const fields)
   using view           = std::string_view;
   constexpr char delim = ' ';
 
-  for (view::size_type ind = 0; ind < str.size(); ++ind) {
+  while (!str.empty()) {
     view::size_type const beg = str.find_first_not_of(delim);
     if (view::npos == beg) {
       break;
