@@ -53,15 +53,13 @@
 namespace
 {
 
-constexpr char const *const PLUGIN_NAME  = "revalidate";
-constexpr char const *const STATE_SUBDIR = "var/trafficserver";
-constexpr char const *const PASS_HEADER  = "X-Revalidate-Rule";
-constexpr int const OVEC_SIZE            = 30;
+constexpr char const *const PLUGIN_NAME = "revalidate";
+constexpr char const *const PASS_HEADER = "X-Revalidate-Rule";
 
 // stats management
 constexpr char const *const stat_name_count = "plugin.revalidate_count";
 
-static int stat_id_count = TS_ERROR;
+int stat_id_count = TS_ERROR;
 
 void
 create_stats()
@@ -74,7 +72,7 @@ create_stats()
   }
 }
 
-static void
+void
 increment_stat()
 {
   if (TS_ERROR != stat_id_count) {
@@ -86,7 +84,7 @@ increment_stat()
 struct Rule {
   std::string regex_text{};
   Regex regex{};
-  int64_t version{0}; // ms
+  int64_t timestamp{0}; // ms
   time_t epoch{0};
   time_t expiry{0};
 
@@ -120,7 +118,7 @@ struct Rule {
   inline bool
   is_valid() const
   {
-    return !this->regex_text.empty() && this->regex.is_valid() && 0 < version && 0 < expiry && 0 < epoch;
+    return !this->regex_text.empty() && this->regex.is_valid() && 0 < timestamp && 0 < expiry && 0 < epoch;
   }
 
   inline bool
@@ -158,7 +156,7 @@ struct PluginState {
   std::string pass_header{PASS_HEADER};
   time_t rule_path_time{0};
   time_t min_expiry{0};
-  int64_t version{0};
+  int64_t timestamp{0}; // all rules must share
   // sorted by regex_text
   std::shared_ptr<std::vector<Rule>> rules{std::make_shared<std::vector<Rule>>()};
   TSTextLogObject log{nullptr};
@@ -193,15 +191,17 @@ split(std::string_view str, std::array<std::string_view, Dim> *const fields)
 
   for (view::size_type ind = 0; ind < str.size(); ++ind) {
     view::size_type const beg = str.find_first_not_of(delim);
-    str                       = str.substr(beg);
-    if (view::npos != beg) {
-      view::size_type const end = str.find_first_of(delim);
-      (*fields)[aind++]         = str.substr(0, end);
-      if (fields->size() <= aind) {
-        break;
-      }
-      str = str.substr(end + 1);
+    if (view::npos == beg) {
+      break;
     }
+
+    str                       = str.substr(beg);
+    view::size_type const end = str.find_first_of(delim);
+    (*fields)[aind++]         = str.substr(0, end);
+    if (fields->size() <= aind) {
+      break;
+    }
+    str = str.substr(end + 1);
   }
 
   return aind;
@@ -239,9 +239,9 @@ Rule::from_string(std::string_view const str, time_t const timenow)
   }
 
   std::string_view const sver = fields[FIELD_VER];
-  std::from_chars(sver.data(), sver.data() + sver.length(), rule.version);
-  if (rule.version <= 0) {
-    DEBUG_LOG("Unable to parse version from: '%.*s'", (int)sver.size(), sver.data());
+  std::from_chars(sver.data(), sver.data() + sver.length(), rule.timestamp);
+  if (rule.timestamp <= 0) {
+    DEBUG_LOG("Unable to parse timestamp from: '%.*s'", (int)sver.size(), sver.data());
     return rule;
   }
 
@@ -261,8 +261,8 @@ Rule::info_string() const
   res.append(std::to_string(this->epoch));
   res.append(" expiry: ");
   res.append(std::to_string(this->expiry));
-  res.append(" version: ");
-  res.append(std::to_string(this->version));
+  res.append(" timestamp: ");
+  res.append(std::to_string(this->timestamp));
 
   return res;
 }
@@ -276,7 +276,7 @@ Rule::to_string() const
   res.push_back(' ');
   res.append(std::to_string(this->expiry));
   res.push_back(' ');
-  res.append(std::to_string(this->version));
+  res.append(std::to_string(this->timestamp));
 
   return res;
 }
@@ -284,23 +284,25 @@ Rule::to_string() const
 void
 PluginState::log_config(std::shared_ptr<std::vector<Rule>> const &newrules) const
 {
-  TSDebug(PLUGIN_NAME, "Current config: %s", this->rule_path.c_str());
-  if (nullptr != this->log) {
-    TSTextLogObjectWrite(log, "Current config: %s", this->rule_path.c_str());
-  }
-
-  if (rules) {
-    for (Rule const &rule : *newrules) {
-      std::string const info = rule.info_string();
-      TSDebug(PLUGIN_NAME, info.c_str());
-      if (nullptr != log) {
-        TSTextLogObjectWrite(log, info.c_str());
-      }
-    }
-  } else {
-    TSDebug(PLUGIN_NAME, "Configuration EMPTY");
+  if (TSIsDebugTagSet(PLUGIN_NAME) || nullptr != this->log) {
+    TSDebug(PLUGIN_NAME, "Current config: %s", this->rule_path.c_str());
     if (nullptr != this->log) {
-      TSTextLogObjectWrite(this->log, "EMPTY");
+      TSTextLogObjectWrite(log, "Current config: %s", this->rule_path.c_str());
+    }
+
+    if (rules) {
+      for (Rule const &rule : *newrules) {
+        std::string const info = rule.info_string();
+        TSDebug(PLUGIN_NAME, info.c_str());
+        if (nullptr != this->log) {
+          TSTextLogObjectWrite(this->log, info.c_str());
+        }
+      }
+    } else {
+      TSDebug(PLUGIN_NAME, "Configuration EMPTY");
+      if (nullptr != this->log) {
+        TSTextLogObjectWrite(this->log, "EMPTY");
+      }
     }
   }
 }
@@ -369,7 +371,7 @@ time_for_file(std::filesystem::path const &filepath)
 // Load config, rules sorted by regex_text.
 // Will always return a valid (but maybe empty) vector.
 std::shared_ptr<std::vector<Rule>>
-load_rules_from(std::filesystem::path const &path, time_t const timenow)
+load_rules_from(std::filesystem::path const &path, time_t const timenow, int64_t const tstamp)
 {
   std::shared_ptr<std::vector<Rule>> rules = std::make_shared<std::vector<Rule>>();
 
@@ -378,6 +380,8 @@ load_rules_from(std::filesystem::path const &path, time_t const timenow)
     DEBUG_LOG("Could not open %s for reading", path.c_str());
     return rules;
   }
+
+  int64_t timestamp = 0;
 
   // load from file, last one wins
   std::map<std::string, Rule> loaded;
@@ -389,6 +393,20 @@ load_rules_from(std::filesystem::path const &path, time_t const timenow)
     if (0 < strlen(line) && '#' != line[0]) {
       Rule rnew = Rule::from_string(line, timenow);
       if (rnew.is_valid()) {
+        // first rule check, if we expect newer config file.
+        if (0 == timestamp) {
+          timestamp = rnew.timestamp;
+          if (timestamp < tstamp) { // older ??
+            DEBUG_LOG("Config is old, rule timestamp: %jd, latest timestamp: %jd", timestamp, tstamp);
+            return rules;
+          }
+
+          // ensure rules all have same timestamp
+        } else if (timestamp != rnew.timestamp) {
+          DEBUG_LOG("Mismatch timestamp: '%s' from line: '%d'", line, lineno);
+          continue;
+        }
+
         loaded[rnew.regex_text] = std::move(rnew);
       } else {
         DEBUG_LOG("Invalid rule '%s' from line: '%d'", line, lineno);
@@ -409,8 +427,10 @@ load_rules_from(std::filesystem::path const &path, time_t const timenow)
     if (!rule.expired(timenow)) {
       rules->push_back(std::move(elem.second));
     } else {
-      DEBUG_LOG("Not adding expired rule regex: '%s', version: %jd rule: %jd, time: %jd", rule.regex_text.c_str(), rule.version,
-                (intmax_t)rule.expiry, (intmax_t)timenow);
+      if (TSIsDebugTagSet(PLUGIN_NAME)) {
+        std::string const str = rule.info_string();
+        DEBUG_LOG("Not adding expired rule: '%s'", str.c_str());
+      }
     }
   }
 
@@ -770,7 +790,7 @@ process_rules(PluginState *const pstate)
   }
 
   time_t const timenow                        = time(NULL);
-  std::shared_ptr<std::vector<Rule>> newrules = load_rules_from(pstate->rule_path, timenow);
+  std::shared_ptr<std::vector<Rule>> newrules = load_rules_from(pstate->rule_path, timenow, pstate->timestamp);
 
   std::shared_ptr<std::vector<Rule>> oldrules = std::atomic_load(&(pstate->rules));
 
@@ -907,7 +927,7 @@ TSPluginInit(int argc, char const *argv[])
   time_t const timenow = time(nullptr);
 
   // load rules from path
-  std::shared_ptr<std::vector<Rule>> newrules = load_rules_from(pstate->rule_path, timenow);
+  std::shared_ptr<std::vector<Rule>> newrules = load_rules_from(pstate->rule_path, timenow, pstate->timestamp);
 
   // Calculate next time a rule expires
   if (nullptr != newrules) {
