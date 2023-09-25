@@ -84,16 +84,16 @@ increment_stat()
 struct Rule {
   std::string regex_text{};
   Regex regex{};
-  int64_t timestamp{0}; // ms
   time_t epoch{0};
   time_t expiry{0};
+  int64_t timestamp{0}; // ms
 
   Rule()                      = default;
   Rule(Rule &&orig)           = default;
   Rule &operator=(Rule &&rhs) = default;
   ~Rule()                     = default;
 
-  Rule(Rule const &orig) : regex_text(orig.regex_text), epoch(orig.epoch), expiry(orig.expiry)
+  Rule(Rule const &orig) : regex_text(orig.regex_text), epoch(orig.epoch), expiry(orig.expiry), timestamp(orig.timestamp)
   {
     this->regex.compile(regex_text.c_str());
   }
@@ -156,7 +156,7 @@ struct PluginState {
   std::string pass_header{PASS_HEADER};
   time_t rule_path_time{0};
   time_t min_expiry{0};
-  int64_t timestamp{0}; // all rules must share
+  std::atomic<int64_t> timestamp{0}; // do we need this in the file?
   // sorted by regex_text
   std::shared_ptr<std::vector<Rule>> rules{std::make_shared<std::vector<Rule>>()};
   TSTextLogObject log{nullptr};
@@ -239,10 +239,13 @@ Rule::from_string(std::string_view const str, time_t const timenow)
   }
 
   std::string_view const sver = fields[FIELD_VER];
-  std::from_chars(sver.data(), sver.data() + sver.length(), rule.timestamp);
-  if (rule.timestamp <= 0) {
+  int64_t timestamp           = 0;
+  std::from_chars(sver.data(), sver.data() + sver.length(), timestamp);
+  if (timestamp <= 0) {
     DEBUG_LOG("Unable to parse timestamp from: '%.*s'", (int)sver.size(), sver.data());
     return rule;
+  } else {
+    rule.timestamp = timestamp;
   }
 
   rule.epoch = timenow;
@@ -290,7 +293,7 @@ PluginState::log_config(std::shared_ptr<std::vector<Rule>> const &newrules) cons
       TSTextLogObjectWrite(log, "Current config: %s", this->rule_path.c_str());
     }
 
-    if (rules) {
+    if (rules && !rules->empty()) {
       for (Rule const &rule : *newrules) {
         std::string const info = rule.info_string();
         TSDebug(PLUGIN_NAME, info.c_str());
@@ -371,7 +374,7 @@ time_for_file(std::filesystem::path const &filepath)
 // Load config, rules sorted by regex_text.
 // Will always return a valid (but maybe empty) vector.
 std::shared_ptr<std::vector<Rule>>
-load_rules_from(std::filesystem::path const &path, time_t const timenow, int64_t const tstamp)
+load_rules_from(std::filesystem::path const &path, time_t const timenow)
 {
   std::shared_ptr<std::vector<Rule>> rules = std::make_shared<std::vector<Rule>>();
 
@@ -380,8 +383,6 @@ load_rules_from(std::filesystem::path const &path, time_t const timenow, int64_t
     DEBUG_LOG("Could not open %s for reading", path.c_str());
     return rules;
   }
-
-  int64_t timestamp = 0;
 
   // load from file, last one wins
   std::map<std::string, Rule> loaded;
@@ -393,20 +394,6 @@ load_rules_from(std::filesystem::path const &path, time_t const timenow, int64_t
     if (0 < strlen(line) && '#' != line[0]) {
       Rule rnew = Rule::from_string(line, timenow);
       if (rnew.is_valid()) {
-        // first rule check, if we expect newer config file.
-        if (0 == timestamp) {
-          timestamp = rnew.timestamp;
-          if (timestamp < tstamp) { // older ??
-            DEBUG_LOG("Config is old, rule timestamp: %jd, latest timestamp: %jd", timestamp, tstamp);
-            return rules;
-          }
-
-          // ensure rules all have same timestamp
-        } else if (timestamp != rnew.timestamp) {
-          DEBUG_LOG("Mismatch timestamp: '%s' from line: '%d'", line, lineno);
-          continue;
-        }
-
         loaded[rnew.regex_text] = std::move(rnew);
       } else {
         DEBUG_LOG("Invalid rule '%s' from line: '%d'", line, lineno);
@@ -560,44 +547,58 @@ merge_new_rule(std::shared_ptr<std::vector<Rule>> const &rules, Rule *const newr
 
   TSAssert(nullptr != newrule);
 
+  DEBUG_LOG("Existing rules");
+  for (auto const &rule : *rules) {
+    DEBUG_LOG("  '%s'", rule.regex_text.c_str());
+  }
+
   if (rules->empty()) {
     if (!newrule->expired(timenow)) {
       newrules = std::make_shared<std::vector<Rule>>();
       newrules->push_back(*newrule);
     }
-  } else if (*newrule < rules->front()) {
-    if (!newrule->expired(timenow)) {
-      newrules = std::make_shared<std::vector<Rule>>(1, *newrule);
-      newrules->insert(newrules->end(), rules->cbegin(), rules->cend());
-    }
   } else {
-    auto itold = std::lower_bound(rules->cbegin(), rules->cend(), *newrule);
-    TSAssert(rules->cend() != itold);
+    auto itold = std::lower_bound(rules->begin(), rules->end(), *newrule);
 
-    // adjust rule expiry or erase it
-    // this may cause rule thrashing if the child caches are in
-    // rule transition
-    if (itold->regex_text == newrule->regex_text) {
-      size_t const index = std::distance(rules->cbegin(), itold);
-      if (newrule->expiry != itold->expiry) {
+    if (rules->end() == itold) { // append
+      if (!newrule->expired(timenow)) {
+        DEBUG_LOG("Appending as last: '%s'", newrule->regex_text.c_str());
         newrules = std::make_shared<std::vector<Rule>>(*rules);
-        if (!newrule->expired(timenow)) {
-          (*newrules)[index].expiry = newrule->expiry;
-          (*newrules)[index].epoch  = newrule->epoch;
-        } else {
-          newrules->erase(newrules->begin() + index);
-        }
-      } else { // optimization: update new rule epoch in place
-        newrule->epoch = (*rules)[index].epoch;
+        newrules->push_back(*newrule);
       }
     } else {
-      if (!newrule->expired(timenow)) {
-        ++itold; // change to std::upper_bound
-        newrules = std::make_shared<std::vector<Rule>>(rules->cbegin(), itold);
-        newrules->push_back(*newrule);
-        newrules->insert(newrules->end(), itold, rules->cend());
+      DEBUG_LOG("Inserting: '%s' lower: '%s'", newrule->regex_text.c_str(), itold->regex_text.c_str());
+      // adjust rule expiry or erase it
+      if (itold->regex_text == newrule->regex_text) {
+        // version check to avoid adding stale rule
+        if (itold->timestamp < newrule->timestamp) {
+          size_t const index = std::distance(rules->begin(), itold);
+          if (newrule->expiry != itold->expiry) {
+            newrules = std::make_shared<std::vector<Rule>>(*rules);
+            if (!newrule->expired(timenow)) {
+              (*newrules)[index].expiry = newrule->expiry;
+              (*newrules)[index].epoch  = newrule->epoch;
+            } else {
+              newrules->erase(newrules->begin() + index);
+            }
+          } else { // optimization: update new rule epoch in place
+            newrule->epoch = (*rules)[index].epoch;
+          }
+        }
+      } else {
+        if (!newrule->expired(timenow)) {
+          ++itold; // change to std::upper_bound
+          newrules = std::make_shared<std::vector<Rule>>(rules->begin(), itold);
+          newrules->push_back(*newrule);
+          newrules->insert(newrules->end(), itold, rules->end());
+        }
       }
     }
+  }
+
+  DEBUG_LOG("Merged rules");
+  for (auto const &rule : *newrules) {
+    DEBUG_LOG("  '%s'", rule.regex_text.c_str());
   }
 
   return newrules;
@@ -622,8 +623,9 @@ get_date_from_cached_hdr(TSHttpTxn txnp)
   return date;
 }
 
+// continuation calls into this
 int
-main_handler(TSCont cont, TSEvent event, void *edata)
+cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
 {
   TSHttpTxn txnp            = (TSHttpTxn)edata;
   int status                = TS_ERROR;
@@ -641,25 +643,37 @@ main_handler(TSCont cont, TSEvent event, void *edata)
     DEBUG_LOG("Decoded from header: %s", decoded.c_str());
     newrule = Rule::from_string(decoded, timenow);
     if (newrule.is_valid()) { // may be expired
-      rules                                       = std::atomic_load(&(pstate->rules));
-      std::shared_ptr<std::vector<Rule>> newrules = merge_new_rule(rules, &newrule);
 
-      if (nullptr != newrules) {
-        rules = newrules;
-        std::atomic_store(&(pstate->rules), newrules);
-        pstate->log_config(newrules);
+      // check if rule is a newer version
+      int64_t const ptime = pstate->timestamp;
+      if (ptime < newrule.timestamp) {
+        DEBUG_LOG("timestamp pstate: %jd, rule: %jd", ptime, newrule.timestamp);
+
+        rules = std::atomic_load(&(pstate->rules));
+
+        // this may adjust the "newrule"
+        std::shared_ptr<std::vector<Rule>> newrules = merge_new_rule(rules, &newrule);
+
+        if (nullptr != newrules) {
+          rules = newrules;
+          std::atomic_store(&(pstate->rules), newrules);
+          pstate->log_config(newrules);
+        }
+      } else {
+        DEBUG_LOG("Out of date rule skipped and invalidated");
+        newrule = Rule{};
       }
     } else {
       DEBUG_LOG("Error decoding rule");
     }
   }
 
-  DEBUG_LOG("main_handler: %s", TSHttpEventNameLookup(event));
+  DEBUG_LOG("event: %s", TSHttpEventNameLookup(event));
 
   switch (event) {
   case TS_EVENT_HTTP_CACHE_LOOKUP_COMPLETE:
     if (TS_SUCCESS == TSHttpTxnCacheLookupStatusGet(txnp, &status)) {
-      DEBUG_LOG("main_handler: cache hit status %d", status);
+      DEBUG_LOG("cache hit status %d", status);
       switch (status) {
       case TS_CACHE_LOOKUP_HIT_FRESH: {
         time_t cached_date = 0;
@@ -668,7 +682,7 @@ main_handler(TSCont cont, TSEvent event, void *edata)
 
         bool matched = false;
 
-        // check if passed in decoded rule still applies
+        // check if passed in decoded rule applies
         if (newrule.is_valid() && !newrule.expired(timenow)) {
           cached_date = get_date_from_cached_hdr(txnp);
           if (cached_date <= newrule.epoch) {
@@ -790,80 +804,66 @@ process_rules(PluginState *const pstate)
   }
 
   time_t const timenow                        = time(NULL);
-  std::shared_ptr<std::vector<Rule>> newrules = load_rules_from(pstate->rule_path, timenow, pstate->timestamp);
+  std::shared_ptr<std::vector<Rule>> newrules = load_rules_from(pstate->rule_path, timenow);
 
   std::shared_ptr<std::vector<Rule>> oldrules = std::atomic_load(&(pstate->rules));
 
   bool changed = false;
 
-  if (oldrules->empty() && !newrules->empty()) {
-    auto itnew = newrules->begin();
-    while (newrules->end() != itnew) {
-      if (itnew->expired(timenow)) {
-        itnew = newrules->erase(itnew);
-      } else {
-        changed = true;
-        ++itnew;
-      }
-    }
-  } else if (!oldrules->empty() && newrules->empty()) { // all rules removed
-    changed = true;
-  } else if (!oldrules->empty() && !newrules->empty()) {
-    auto itold = oldrules->cbegin();
-    auto itnew = newrules->begin();
+  // merge epochs from old rules to new rules
+  auto itold = oldrules->cbegin();
+  auto itnew = newrules->begin();
 
-    while (oldrules->cend() != itold && newrules->end() != itnew) {
-      // check for any changes
-      int const cres = itold->regex_text.compare(itnew->regex_text);
-      if (cres < 0) {                   // new item not in old
-        if (!itnew->expired(timenow)) { // rule is already expired
-          itnew = newrules->erase(itnew);
-        } else { // new rule
-          changed = true;
-          ++itnew;
-        }
-      } else if (0 == cres) {                 // rule match
-        if (itnew->expiry != itold->expiry) { // expiration changed
-          changed = true;
-
-          if (itnew->expired(timenow)) {
-            itnew = newrules->erase(itnew);
-          } else {
-            ++itnew;
-          }
-          ++itold;
-        } else { // retain the old epoch
-          itnew->epoch = itold->epoch;
-          ++itold;
-          ++itnew;
-        }
-      } else if (0 < cres) { // old item not in new
-        if (!itold->expired(timenow)) {
-          changed = true;
-        }
-        ++itold;
-      }
-    }
-
-    // any extra old rules are removed
-    if (oldrules->cend() != itold) {
+  // transfer epochs from current rules to new rules
+  while (oldrules->cend() != itold && newrules->end() != itnew) {
+    int const cres = itold->regex_text.compare(itnew->regex_text);
+    if (cres < 0) { // new item not in old
       changed = true;
-    }
-
-    // Retain any trailing unexpired new rules
-    while (newrules->end() != itnew) {
-      if (itnew->expired(timenow)) {
-        itnew = newrules->erase(itnew);
-      } else {
+      ++itold;
+    } else if (0 == cres) {                 // items match
+      if (itnew->expiry != itold->expiry) { // expiration change
         changed = true;
-        ++itnew;
+      } else { // same rule, transfer epoch
+        itnew->epoch = itold->epoch;
       }
+      ++itold;
+      ++itnew;
+    } else { // if (0 < cres) { // old item not in new
+      changed = true;
+      ++itnew;
     }
   }
 
+  // any extra rules?
+  if (oldrules->cend() != itold || newrules->end() != itnew) {
+    changed = true;
+  }
+
   if (changed) {
+    // remove intentionally expired rules, update pstate timestamp
+    int64_t timestamp = pstate->timestamp;
+
+    itnew = newrules->begin();
+    while (newrules->end() != itnew) {
+      timestamp = std::max(timestamp, itnew->timestamp);
+      if (itnew->expired(timenow)) {
+        itnew = newrules->erase(itnew);
+      } else {
+        ++itnew;
+      }
+    }
+
+    pstate->timestamp = timestamp;
+
+    DEBUG_LOG("Changes detected, new rules installed");
+    pstate->log_config(newrules);
+
+    // at this point all rules should share the same timestamp
+    if (!newrules->empty()) {
+      pstate->timestamp = newrules->front().timestamp;
+    }
+
     std::atomic_store(&(pstate->rules), newrules);
-    DEBUG_LOG("new rules installed");
   }
 
   pstate->rule_path_time = timepath;
@@ -920,17 +920,32 @@ TSPluginInit(int argc, char const *argv[])
 
   create_stats();
 
-  TSCont const main_cont = TSContCreate(main_handler, nullptr);
+  TSCont const main_cont = TSContCreate(cache_lookup_handler, nullptr);
   TSContDataSet(main_cont, static_cast<void *>(pstate));
   TSHttpHookAdd(TS_HTTP_CACHE_LOOKUP_COMPLETE_HOOK, main_cont);
 
   time_t const timenow = time(nullptr);
 
   // load rules from path
-  std::shared_ptr<std::vector<Rule>> newrules = load_rules_from(pstate->rule_path, timenow, pstate->timestamp);
+  std::shared_ptr<std::vector<Rule>> newrules = load_rules_from(pstate->rule_path, timenow);
 
-  // Calculate next time a rule expires
+  // set new rules
   if (nullptr != newrules) {
+    int64_t timestamp = 0;
+
+    // scan for latest version and also trim out expired rules
+    auto itnew = newrules->begin();
+    while (newrules->end() != itnew) {
+      timestamp = std::max(timestamp, itnew->timestamp);
+      if (itnew->expired(timenow)) {
+        itnew = newrules->erase(itnew);
+      } else {
+        ++itnew;
+      }
+    }
+
+    pstate->timestamp = timestamp;
+
     std::atomic_store(&(pstate->rules), newrules);
   }
 

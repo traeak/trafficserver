@@ -25,20 +25,17 @@ Revalidate propagation test.
 '''
 
 # Test description:
-# Load up cache, ensure fresh
-# Create regex reval rule, config reload:
-#  ensure item is staled only once.
-# Add a new rule, config reload:
-#  ensure item isn't restaled again, but rule still in effect.
+# 2 edges, 1 mid
+# Load up caches.
+# Load with configs: (edge0, mid, edge1) oldest to newest configs.
 #
-# If the rule disappears from revalidate.conf its still loaded!!
-# A rule's expiry can't be changed after the fact!
+# Do config files need timestamping?
 
 Test.testName = "revalidate_prop"
 
 Test.SkipUnless(
     Condition.PluginExists('revalidate.so'),
-    #    Condition.PluginExists('xdebug.so')
+    Condition.PluginExists('xdebug.so')
 )
 
 # set up proxy verifier
@@ -52,7 +49,7 @@ def MakeATSInstance(name, server_port):
 
     # Configure ATS servers
     ats.Disk.plugin_config.AddLines([
-        #        'xdebug.so --enable=x-cache',
+        'xdebug.so --enable=x-cache',
         'revalidate.so --rule-path=reval.conf',
     ])
 
@@ -104,8 +101,7 @@ edge1_path = os.path.join(edge1.Variables.CONFIGDIR, 'reval.conf')
 edge0_proxy = f' -x 127.0.0.1:{edge0.Variables.port}'
 edge1_proxy = f' -x 127.0.0.1:{edge1.Variables.port}'
 
-#curl_and_args = 'curl -s -D - -v -H "x-debug: x-cache"'
-curl_and_args = 'curl -s -D - -v'  # -H "x-debug: x-cache"'
+curl_and_args = 'curl -s -D - -v -H "x-debug: x-cache"'
 
 """ Test """
 
@@ -127,7 +123,7 @@ ps = tr.Processes.Default
 tr.AddVerifierClientProcess("client1", preload_file, http_ports=[edge1.Variables.port])
 ps.ReturnCode = 0
 
-# 2 Update mid config (median config)
+# 2 Update mid config (mid config)
 tr = Test.AddTestRun("Load mid config")
 ps = tr.Processes.Default
 tr.DelayStart = 1
@@ -146,7 +142,7 @@ ps = tr.Processes.Default
 tr.DelayStart = 1
 tr.Disk.File(edge0_path, typename="ats:config").AddLines([
     f"foo {expiry} 1",
-    f"bar {expiry} 1",
+    f"bar {expiry} 2",
 ])
 tr.StillRunningAfter = edge0
 tr.AddJsonRPCClientRequest(edge0, Request.admin_config_reload())
@@ -159,7 +155,7 @@ tr = Test.AddTestRun("Load edge1 config")
 ps = tr.Processes.Default
 tr.DelayStart = 1
 tr.Disk.File(edge1_path, typename="ats:config").AddLines([
-    f"bar {expiry} 3",
+    f"bar {expiry} 2",
     f"baz {expiry} 3",
 ])
 tr.StillRunningAfter = edge1
@@ -173,183 +169,51 @@ tr = Test.AddTestRun("foo through edge0")
 ps = tr.Processes.Default
 ps.Command = curl_and_args + ' http://example.com/foo -H "uuid: 1"' + edge0_proxy
 ps.ReturnCode = 0
-ps.Streams.stderr.Content = Testers.ContainsExpression("X-Cache: miss", "expected cache miss")
+ps.Streams.stdout.Content = Testers.ContainsExpression("X-Cache: hit-stale", "expected cache hit stale")
+ps.Streams.stdout.Content += Testers.ContainsExpression(r"mid \[cHs f \]", "unexpected mid via string")
+ps.Streams.stdout.Content += Testers.ContainsExpression(r"edge0 \[cSsSfU\]", "unexpected edge via string")
 
-
-"""
-
-tr = Test.AddTestRun("Cache miss path1")
+# 6 foo through edge1 - mid returns 304
+tr = Test.AddTestRun("foo through edge1")
 ps = tr.Processes.Default
-ps.StartBefore(server)
-ps.StartBefore(mid)
-ps.StartBefore(edge0)
-ps.Command = curl_and_args + ' http://example.com/foo -H "uuid: 1"'
+ps.Command = curl_and_args + ' http://example.com/foo -H "uuid: 1"' + edge1_proxy
 ps.ReturnCode = 0
-ps.Streams.stderr.Content = Testers.ContainsExpression("X-Cache: miss", "expected cache miss")
+ps.Streams.stdout.Content = Testers.ContainsExpression("X-Cache: hit-fresh", "expected cache hit fresh")
+ps.Streams.stdout.Content += Testers.ContainsExpression(r"mid \[cHs f \]", "unexpected mid via string")
+ps.Streams.stdout.Content += Testers.ContainsExpression(r"edge1 \[cHs f \]", "unexpected edge via string")
 
-
-# 1 Test - Load cache (miss) for later test (path1a)
-tr = Test.AddTestRun("Cache miss path1a")
+# 7 bar through edge0 - origin returns hit
+tr = Test.AddTestRun("bar through edge0")
 ps = tr.Processes.Default
-ps.Command = curl_and_args + ' http://example.com/path1a -H "uuid: 2"'
+ps.Command = curl_and_args + ' http://example.com/bar -H "uuid: 2"' + edge0_proxy
 ps.ReturnCode = 0
-ps.Streams.stderr.Content = Testers.ContainsExpression("X-Cache: miss", "expected cache miss")
-tr.StillRunningAfter = edge
-tr.StillRunningAfter = mid
+ps.Streams.stdout.Content = Testers.ContainsExpression("X-Cache: hit-stale", "expected cache hit stale")
+ps.Streams.stdout.Content += Testers.ContainsExpression(r"mid \[cSsSfU\]", "unexpected mid via string")
+ps.Streams.stdout.Content += Testers.ContainsExpression(r"edge0 \[cSsSfU\]", "unexpected edge via string")
 
-# 2 Test - Load cache (miss) for later test (path2a)
-tr = Test.AddTestRun("Cache miss path2a")
+# 8 bar through edge1 - mid now returns hit
+tr = Test.AddTestRun("bar through edge1")
 ps = tr.Processes.Default
-ps.Command = curl_and_args + ' http://example.com/path2a -H "uuid: 3"'
+ps.Command = curl_and_args + ' http://example.com/bar -H "uuid: 2"' + edge1_proxy
 ps.ReturnCode = 0
-ps.Streams.stderr.Content = Testers.ContainsExpression("X-Cache: miss", "expected cache miss")
-tr.StillRunningAfter = edge
-tr.StillRunningAfter = mid
+ps.Streams.stdout.Content = Testers.ContainsExpression("X-Cache: hit-stale", "expected cache hit stale")
+ps.Streams.stdout.Content += Testers.ContainsExpression(r"mid \[cHs f \]", "unexpected mid via string")
+ps.Streams.stdout.Content += Testers.ContainsExpression(r"edge1 \[cSsSfU\]", "unexpected edge via string")
 
-# 3 Test - Cache hit path1
-tr = Test.AddTestRun("Cache hit fresh path1")
+# 9 baz through edge0 - edge returns hit (rule not there yet)
+tr = Test.AddTestRun("baz through edge0")
 ps = tr.Processes.Default
-ps.Command = curl_and_args + ' http://example.com/path1 -H "uuid: 1"'
+ps.Command = curl_and_args + ' http://example.com/baz -H "uuid: 3"' + edge0_proxy
 ps.ReturnCode = 0
-ps.Streams.stderr.Content = Testers.ContainsExpression("X-Cache: hit", "expected cache hit")
-tr.StillRunningAfter = edge
-tr.StillRunningAfter = mid
+ps.Streams.stdout.Content = Testers.ContainsExpression("X-Cache: hit-fresh", "expected cache hit fresh")
+#ps.Streams.stdout.Content += Testers.ContainsExpression("mid \[cSsSfU\]", "unexpected mid via string")
+ps.Streams.stdout.Content += Testers.ContainsExpression(r"edge0 \[cHs f \]", "unexpected edge via string")
 
-# 4 Stage - Reload new revalidate
-tr = Test.AddTestRun("Reload config add path1")
+# 10 baz through edge1 - mid adds rule and request through to origin
+tr = Test.AddTestRun("baz through edge1")
 ps = tr.Processes.Default
-# Need a sufficient delay so that the modification time difference
-# of the new config file versus the old is greater than the granularity
-# of the time stamp used. (The config file write happens after the delay.)
-tr.DelayStart = 1
-tr.Disk.File(revalidate_conf_path, typename="ats:config").AddLines([
-    path1_rule
-])
-tr.StillRunningAfter = edge
-tr.StillRunningAfter = mid
-tr.StillRunningAfter = server
-tr.AddJsonRPCClientRequest(edge, Request.admin_config_reload())
+ps.Command = curl_and_args + ' http://example.com/baz -H "uuid: 3"' + edge1_proxy
 ps.ReturnCode = 0
-ps.TimeOut = 5
-tr.TimeOut = 5
-
-# 5 Test - Revalidate path1
-tr = Test.AddTestRun("Revalidate stale path1")
-ps = tr.Processes.Default
-tr.DelayStart = 5
-ps.Command = curl_and_args + ' http://example.com/path1 -H "uuid: 1"'
-ps.ReturnCode = 0
-ps.Streams.stderr.Content = Testers.ContainsExpression("X-Cache: hit-stale", "expected cache hit-stale")
-tr.StillRunningAfter = edge
-tr.StillRunningAfter = mid
-
-# 6 Test - Cache hit (path1)
-tr = Test.AddTestRun("Cache hit fresh path1")
-ps = tr.Processes.Default
-ps.Command = curl_and_args + ' http://example.com/path1 -H "uuid: 1"'
-ps.ReturnCode = 0
-ps.Streams.stderr.Content = Testers.ContainsExpression("X-Cache: hit", "expected cache hit")
-tr.StillRunningAfter = edge
-tr.StillRunningAfter = mid
-
-# 7 Stage - Reload new revalidate
-tr = Test.AddTestRun("Reload config add path2")
-ps = tr.Processes.Default
-# Need a sufficient delay so that the modification time difference
-# of the new config file versus the old is greater than the granularity
-# of the time stamp used. (The config file write happens after the delay.)
-tr.DelayStart = 1
-timenow = time.time()
-tr.Disk.File(revalidate_conf_path, typename="ats:config").AddLines([
-    path1_rule,
-    'path2 {} {}'.format(int(timenow) + 700, int(timenow * 1000))
-])
-tr.StillRunningAfter = edge
-tr.StillRunningAfter = mid
-tr.StillRunningAfter = server
-tr.AddJsonRPCClientRequest(edge, Request.admin_config_reload())
-ps.ReturnCode = 0
-ps.TimeOut = 5
-tr.TimeOut = 5
-
-# 8 Test - Cache hit (path1)
-tr = Test.AddTestRun("Cache hit fresh path1")
-ps = tr.Processes.Default
-tr.DelayStart = 5
-ps.Command = curl_and_args + ' http://example.com/path1 -H "uuid: 1"'
-ps.ReturnCode = 0
-ps.Streams.stderr.Content = Testers.ContainsExpression("X-Cache: hit", "expected cache hit")
-tr.StillRunningAfter = edge
-tr.StillRunningAfter = mid
-
-# 9 Test - Cache stale (check rule is still loaded) (path1a)
-tr = Test.AddTestRun("Revalidate stale path1a")
-ps = tr.Processes.Default
-ps.Command = curl_and_args + ' http://example.com/path1a -H "uuid: 2"'
-ps.ReturnCode = 0
-ps.Streams.stderr.Content = Testers.ContainsExpression("X-Cache: hit-stale", "expected cache hit-stale")
-tr.StillRunningAfter = edge
-tr.StillRunningAfter = mid
-
-# The C version of revalidate doesn't allow an existing rule to
-# be changed by a reload.
-
-# 10 Stage - revalidate rewrite rule early expire
-tr = Test.AddTestRun("Reload config change path2")
-ps = tr.Processes.Default
-# Need a sufficient delay so that the modification time difference
-# of the new config file versus the old is greater than the granularity
-# of the time stamp used. (The config file write happens after the delay.)
-tr.DelayStart = 1
-timenow = time.time()
-tr.Disk.File(revalidate_conf_path, typename="ats:config").AddLines([
-    path1_rule,
-    'path2 {} {}\n'.format(int(timenow) - 100, int(timenow * 1000))
-])
-tr.StillRunningAfter = edge
-tr.StillRunningAfter = mid
-tr.StillRunningAfter = server
-tr.AddJsonRPCClientRequest(edge, Request.admin_config_reload())
-ps.ReturnCode = 0
-ps.TimeOut = 5
-tr.TimeOut = 5
-
-# 11 Test - Cache hit (path2a)
-tr = Test.AddTestRun("Cache hit path2a (expired rule)")
-ps = tr.Processes.Default
-tr.DelayStart = 5
-ps.Command = curl_and_args + ' http://example.com/path2a -H "uuid: 3"'
-ps.ReturnCode = 0
-ps.Streams.stderr.Content = Testers.ContainsExpression("X-Cache: hit", "expected cache hit")
-tr.StillRunningAfter = edge
-tr.StillRunningAfter = mid
-
-# wait for logs to write
-condwaitpath = os.path.join(Test.Variables.AtsTestToolsDir, 'condwait')
-
-# 12 look for ts transaction log
-edgelog = os.path.join(edge.Variables.LOGDIR, 'transaction.log')
-tr = Test.AddTestRun()
-ps = tr.Processes.Default
-ps.Command = (condwaitpath + ' 60 1 -f ' + edgelog)
-
-# 13 check edge transaction log
-tr = Test.AddTestRun()
-ps = tr.Processes.Default
-ps.Command = (f"cat {edgelog}")
-tr.Streams.stdout = "gold/edge.log.gold"
-ps.ReturnCode = 0
-
-# 14 look for mid transaction log
-midlog = os.path.join(mid.Variables.LOGDIR, 'transaction.log')
-tr = Test.AddTestRun()
-ps = tr.Processes.Default
-ps.Command = (condwaitpath + ' 60 1 -f ' + midlog)
-
-# 15 check mid transaction log
-tr = Test.AddTestRun()
-ps = tr.Processes.Default
-ps.Command = (f"cat {midlog}")
-tr.Streams.stdout = "gold/mid.log.gold"
-ps.ReturnCode = 0
-"""
+ps.Streams.stdout.Content = Testers.ContainsExpression("X-Cache: hit-stale", "expected cache hit stale")
+ps.Streams.stdout.Content += Testers.ContainsExpression(r"mid \[cSsSfU\]", "unexpected mid via string")
+ps.Streams.stdout.Content += Testers.ContainsExpression(r"edge1 \[cSsSfU\]", "unexpected edge via string")
