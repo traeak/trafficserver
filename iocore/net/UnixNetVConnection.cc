@@ -1360,9 +1360,13 @@ UnixNetVConnection::migrateToCurrentThread(Continuation *cont, EThread *t)
 
   // Do_io_close will signal the VC to be freed on the original thread
   // Since we moved the con context, the fd will not be closed
-  // Go ahead and remove the fd from the original thread's epoll structure, so it is not
-  // processed on two threads simultaneously
-  this->ep.stop();
+  // Go ahead and remove the fd from the original thread's epoll structure,
+  // so it is not processed on two threads simultaneously
+  // We need to lock this operation so that events can't sneak in.
+  {
+    SCOPED_MUTEX_LOCK(vclock, this->mutex, t);
+    this->ep.stop();
+  }
 
   // Create new VC:
   UnixNetVConnection *newvc = static_cast<UnixNetVConnection *>(this->_getNetProcessor()->allocate_vc(t));

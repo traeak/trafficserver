@@ -151,48 +151,54 @@ ServerSessionPool::acquireSession(sockaddr const *addr, CryptoHash const &hostna
     // This is broken out because only in this case do we check the host hash first. The range must be checked
     // to verify an upstream that matches port and SNI name is selected. Walk backwards to select oldest.
     in_port_t port = ats_ip_port_cast(addr);
-    auto first     = m_fqdn_pool.find(hostname_hash);
-    while (first != m_fqdn_pool.end() && first->hostname_hash == hostname_hash) {
-      Debug("http_ss", "Compare port 0x%x against 0x%x", port, ats_ip_port_cast(first->get_remote_addr()));
-      if (port == ats_ip_port_cast(first->get_remote_addr()) &&
-          (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_SNI) || validate_sni(sm, first->get_netvc())) &&
-          (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTSNISYNC) || validate_host_sni(sm, first->get_netvc())) &&
-          (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_CERT) || validate_cert(sm, first->get_netvc()))) {
-        zret = HSM_DONE;
+    auto iter      = m_fqdn_pool.find(hostname_hash);
+    while (iter != m_fqdn_pool.end() && iter->hostname_hash == hostname_hash) {
+      Debug("http_ss", "Compare port 0x%x against 0x%x", port, ats_ip_port_cast(iter->get_remote_addr()));
+      if (port == ats_ip_port_cast(iter->get_remote_addr()) &&
+          (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_SNI) || validate_sni(sm, iter->get_netvc())) &&
+          (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTSNISYNC) || validate_host_sni(sm, iter->get_netvc())) &&
+          (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_CERT) || validate_cert(sm, iter->get_netvc()))) {
+        to_return = iter;
         break;
       }
-      ++first;
+      ++iter;
     }
-    if (zret == HSM_DONE) {
-      to_return = first;
+
+    // post loop check
+    if (nullptr != to_return) {
       this->removeSession(to_return);
-    } else if (first != m_fqdn_pool.end()) {
+    } else if (iter != m_fqdn_pool.end()) {
       Debug("http_ss", "Failed find entry due to name mismatch %s", sm->t_state.current.server->name);
     }
   } else if (TS_SERVER_SESSION_SHARING_MATCH_MASK_IP & match_style) { // matching is not disabled.
-    auto first = m_ip_pool.find(addr);
+    auto iter = m_ip_pool.find(addr);
     // The range is all that is needed in the match IP case, otherwise need to scan for matching fqdn
     // And matches the other constraints as well
     // Note the port is matched as part of the address key so it doesn't need to be checked again.
     if (match_style & (~TS_SERVER_SESSION_SHARING_MATCH_MASK_IP)) {
-      while (first != m_ip_pool.end() && ats_ip_addr_port_eq(first->get_remote_addr(), addr)) {
-        if ((!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTONLY) || first->hostname_hash == hostname_hash) &&
-            (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_SNI) || validate_sni(sm, first->get_netvc())) &&
-            (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTSNISYNC) || validate_host_sni(sm, first->get_netvc())) &&
-            (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_CERT) || validate_cert(sm, first->get_netvc()))) {
-          zret = HSM_DONE;
+      while (iter != m_ip_pool.end() && ats_ip_addr_port_eq(iter->get_remote_addr(), addr)) {
+        if ((!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTONLY) || iter->hostname_hash == hostname_hash) &&
+            (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_SNI) || validate_sni(sm, iter->get_netvc())) &&
+            (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_HOSTSNISYNC) || validate_host_sni(sm, iter->get_netvc())) &&
+            (!(match_style & TS_SERVER_SESSION_SHARING_MATCH_MASK_CERT) || validate_cert(sm, iter->get_netvc()))) {
+          to_return = iter;
           break;
         }
-        ++first;
+        ++iter;
       }
-    } else if (first != m_ip_pool.end()) {
-      zret = HSM_DONE;
+    } else if (iter != m_ip_pool.end()) {
+      to_return = iter;
     }
-    if (zret == HSM_DONE) {
-      to_return = first;
+
+    if (nullptr != to_return) {
       this->removeSession(to_return);
     }
   }
+
+  if (nullptr != to_return) {
+    zret = HSM_DONE;
+  }
+
   return zret;
 }
 
@@ -412,15 +418,17 @@ HSMresult_t
 HttpSessionManager::_acquire_session(sockaddr const *ip, CryptoHash const &hostname_hash, HttpSM *sm,
                                      TSServerSessionSharingMatchMask match_style, TSServerSessionSharingPoolType pool_type)
 {
-  PoolableSession *to_return = nullptr;
-  HSMresult_t retval         = HSM_NOT_FOUND;
+  PoolableSession *to_return    = nullptr;
+  HSMresult_t retval            = HSM_NOT_FOUND;
+  UnixNetVConnection *server_vc = nullptr;
+  EThread *ethread              = this_ethread();
 
   // Extend the mutex window until the acquired Server session is attached
   // to the SM. Releasing the mutex before that results in race conditions
   // due to a potential parallel network read on the VC with no mutex guarding
+
   {
     // Now check to see if we have a connection in our shared connection pool
-    EThread *ethread = this_ethread();
     Ptr<ProxyMutex> pool_mutex =
       (TS_SERVER_SESSION_SHARING_POOL_THREAD == pool_type) ? ethread->server_session_pool->mutex : m_g_pool->mutex;
 
@@ -435,54 +443,57 @@ HttpSessionManager::_acquire_session(sockaddr const *ip, CryptoHash const &hostn
       } else {
         retval = m_g_pool->acquireSession(ip, hostname_hash, match_style, sm, to_return);
         Debug("http_ss", "[acquire session] global pool search %s", to_return ? "successful" : "failed");
-        // At this point to_return has been removed from the pool. Do we need to move it
-        // to the same thread?
-        if (to_return) {
-          UnixNetVConnection *server_vc = dynamic_cast<UnixNetVConnection *>(to_return->get_netvc());
-          if (server_vc) {
-            // Disable i/o on this vc now, but, hold onto the g_pool cont
-            // and the mutex to stop any stray events from getting in
+
+        // If thread must be migrated, clear out the VC's
+        // data and event handling on the original thread.
+        if (nullptr != to_return) {
+          server_vc = dynamic_cast<UnixNetVConnection *>(to_return->get_netvc());
+          if (nullptr != server_vc) {
             server_vc->do_io_read(m_g_pool, 0, nullptr);
-            server_vc->do_io_write(m_g_pool, 0, nullptr);
-            UnixNetVConnection *new_vc = server_vc->migrateToCurrentThread(sm, ethread);
-            // The VC moved, free up the original one
-            if (new_vc != server_vc) {
-              ink_assert(new_vc == nullptr || new_vc->nh != nullptr);
-              if (!new_vc) {
-                // Close out to_return, we were't able to get a connection
-                HTTP_INCREMENT_DYN_STAT(http_origin_shutdown_migration_failure);
-                to_return->do_io_close();
-                to_return = nullptr;
-                retval    = HSM_NOT_FOUND;
-              } else {
-                // Keep things from timing out on us
-                new_vc->set_inactivity_timeout(new_vc->get_inactivity_timeout());
-                to_return->set_netvc(new_vc);
-              }
-            } else {
-              // Keep things from timing out on us
-              server_vc->set_inactivity_timeout(server_vc->get_inactivity_timeout());
-            }
+            server_vc->set_inactivity_timeout(server_vc->get_inactivity_timeout());
           }
         }
       }
-    } else { // Didn't get the lock.  to_return is still NULL
+    } else { // Didn't get the lock.  to_return is still nullptr
       retval = HSM_RETRY;
     }
+  }
 
-    if (to_return) {
-      if (sm->create_server_txn(to_return)) {
-        Debug("http_ss", "[%" PRId64 "] [acquire session] return session from shared pool", to_return->connection_id());
-        to_return->state = PoolableSession::SSN_IN_USE;
-        retval           = HSM_DONE;
-      } else {
-        Debug("http_ss", "[%" PRId64 "] [acquire session] failed to get transaction on session from shared pool",
-              to_return->connection_id());
+  // now the session is out of the pool with chance of thread migration
+  if (nullptr != to_return && nullptr != server_vc && TS_SERVER_SESSION_SHARING_POOL_THREAD != pool_type) {
+    UnixNetVConnection *const new_vc = server_vc->migrateToCurrentThread(sm, ethread);
+    // The VC moved, free up the original one
+    if (new_vc != server_vc) {
+      ink_assert(nullptr == new_vc || nullptr != new_vc->nh);
+      if (nullptr == new_vc) {
+        // Close out to_return, we were't able to get a connection
+        HTTP_INCREMENT_DYN_STAT(http_origin_shutdown_migration_failure);
         to_return->do_io_close();
-        retval = HSM_RETRY;
+        to_return = nullptr;
+        retval    = HSM_NOT_FOUND;
+      } else {
+        // Keep things from timing out on us
+        new_vc->set_inactivity_timeout(new_vc->get_inactivity_timeout());
+        to_return->set_netvc(new_vc);
       }
     }
   }
+
+  // final setup work
+  if (nullptr != to_return) {
+    HTTP_DECREMENT_DYN_STAT(http_pooled_server_connections_stat);
+    if (sm->create_server_txn(to_return)) {
+      Debug("http_ss", "[%" PRId64 "] [acquire session] return session from shared pool", to_return->connection_id());
+      to_return->state = PoolableSession::SSN_IN_USE;
+      retval           = HSM_DONE;
+    } else {
+      Debug("http_ss", "[%" PRId64 "] [acquire session] failed to get transaction on session from shared pool",
+            to_return->connection_id());
+      to_return->do_io_close();
+      retval = HSM_RETRY;
+    }
+  }
+
   return retval;
 }
 
@@ -496,20 +507,26 @@ HttpSessionManager::release_session(PoolableSession *to_release)
 
   // The per thread lock looks like it should not be needed but if it's not locked the close checking I/O op will crash.
 
-  MutexLock mlock;
-  MutexTryLock tlock;
-  bool const locked = lockSessionPool(pool->mutex, ethread, this->get_pool_type(), &mlock, &tlock);
+  {
+    MutexLock mlock;
+    MutexTryLock tlock;
+    bool const locked = lockSessionPool(pool->mutex, ethread, this->get_pool_type(), &mlock, &tlock);
 
-  if (locked) {
-    pool->releaseSession(to_release);
-  } else if (this->get_pool_type() == TS_SERVER_SESSION_SHARING_POOL_HYBRID) {
-    // Try again with the thread pool
-    to_release->sharing_pool = TS_SERVER_SESSION_SHARING_POOL_THREAD;
-    return release_session(to_release);
-  } else {
-    Debug("http_ss", "[%" PRId64 "] [release session] could not release session due to lock contention",
-          to_release->connection_id());
-    released_p = false;
+    if (locked) {
+      pool->releaseSession(to_release);
+    } else if (this->get_pool_type() == TS_SERVER_SESSION_SHARING_POOL_HYBRID) {
+      // Try again with the thread pool
+      to_release->sharing_pool = TS_SERVER_SESSION_SHARING_POOL_THREAD;
+      return release_session(to_release);
+    } else {
+      Debug("http_ss", "[%" PRId64 "] [release session] could not release session due to lock contention",
+            to_release->connection_id());
+      released_p = false;
+    }
+  }
+
+  if (released_p) {
+    HTTP_INCREMENT_DYN_STAT(http_pooled_server_connections_stat);
   }
 
   return released_p ? HSM_DONE : HSM_RETRY;
@@ -527,9 +544,7 @@ ServerSessionPool::removeSession(PoolableSession *to_remove)
           m_ip_pool.count());
   }
   m_fqdn_pool.erase(to_remove);
-  if (m_ip_pool.erase(to_remove)) {
-    HTTP_DECREMENT_DYN_STAT(http_pooled_server_connections_stat);
-  }
+  m_ip_pool.erase(to_remove);
   if (is_debug_tag_set("http_ss")) {
     Debug("http_ss", "After Remove session %p m_fqdn_pool size=%zu m_ip_pool_size=%zu", to_remove, m_fqdn_pool.count(),
           m_ip_pool.count());
@@ -544,7 +559,6 @@ ServerSessionPool::addSession(PoolableSession *ss)
   // put it in the pools.
   m_ip_pool.insert(ss);
   m_fqdn_pool.insert(ss);
-  HTTP_INCREMENT_DYN_STAT(http_pooled_server_connections_stat);
 
   if (is_debug_tag_set("http_ss")) {
     char peer_ip[INET6_ADDRPORTSTRLEN];

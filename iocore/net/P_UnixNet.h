@@ -692,7 +692,11 @@ EventIO::modify(int e)
     return 0;
   }
 
-  ink_assert(event_loop);
+  // Session migration may result in this condition.
+  if (nullptr == this->event_loop) {
+    return 0;
+  }
+
 #if TS_USE_EPOLL && !defined(USE_EDGE_TRIGGER)
   struct epoll_event ev;
   memset(&ev, 0, sizeof(ev));
@@ -775,7 +779,11 @@ EventIO::refresh(int e)
     return 0;
   }
 
-  ink_assert(event_loop);
+  // Session migration may result in this condition.
+  if (nullptr == this->event_loop) {
+    return 0;
+  }
+
 #if TS_USE_KQUEUE && defined(USE_EDGE_TRIGGER)
   e = e & events;
   struct kevent ev[2];
