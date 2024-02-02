@@ -605,16 +605,18 @@ SSLCertificateConfig::reconfigure()
 
   // If there are errors in the certificate configs force the load anyway if there
   // is no configuration at all (i.e. this is the initial load).
-  if (retStatus || 0 == configid) {
-    configid = configProcessor.set(configid, lookup);
-  } else {
-    delete lookup;
-  }
-
   if (retStatus) {
+    configid = configProcessor.set(configid, lookup);
     Note("%s finished loading", params->configFilePath);
   } else {
-    Error("%s failed to load", params->configFilePath);
+    Error("%s errors during load", params->configFilePath);
+    if (params->configExitOnLoadError) {
+      Error("Config exit_on_load_fail set, exiting.");
+      delete lookup;
+    } else {
+      Note("Config exit_on_load_fail not set, loading anyways.");
+      configid = configProcessor.set(configid, lookup);
+    }
   }
 
   return retStatus;
