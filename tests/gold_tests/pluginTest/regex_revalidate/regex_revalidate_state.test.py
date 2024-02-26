@@ -131,7 +131,7 @@ ps.StartBefore(server, ready=When.PortOpen(server.Variables.Port))
 
 # Note the ready condition: wait for ATS to modify the contents
 # of the file from dummy to path1.
-ps.StartBefore(Test.Processes.ts, ready=When.FileContains(reval_state_path, "path0"))
+ps.StartBefore(Test.Processes.ts, ready=When.FileContains(reval_state_path, "MISS"))
 
 ps.Command = 'cat ' + reval_state_path
 ps.ReturnCode = 0
