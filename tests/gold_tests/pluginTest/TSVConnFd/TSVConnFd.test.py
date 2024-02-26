@@ -65,6 +65,6 @@ tr.Processes.Default.ReturnCode = 0
 #
 tr = Test.AddTestRun()
 tr.Processes.Default.Command = (
-    "N=10 ; while [ $$N -gt 0 ] ; do " + "if [ ! -f " + InProgressFilePathspec +
-    " ] ; then exit 0 ; fi ; sleep 1 ; N=$$(( N-1 )) ; " + "done ; echo 'TIMEOUT' ; exit 1")
+    os.path.join(Test.Variables.AtsTestToolsDir, 'condwait') + ' 15 1 -f ' + InProgressFilePathspec
+)
 tr.Processes.Default.ReturnCode = 0
