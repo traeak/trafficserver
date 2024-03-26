@@ -38,7 +38,13 @@ struct Config {
   std::string pregen_header;      // generate request header during remap
   std::string global_skip_header; // skip global plugin
   bool create_if_none = false;
-  bool passthru       = false; // transparen mode: pass any headers through
+  bool passthru       = false; // transparent mode: pass any headers through
+
+  bool
+  pregen() const
+  {
+    return !pregen_header.empty();
+  }
 };
 
 Config *
@@ -315,11 +321,11 @@ global_skip_check(TSCont const contp, TSHttpTxn const txnp, TxnData *const txn_d
     return;
   }
 
-  // Check for a money trace header.  Route accordingly.
+  // Check for a global skip header.  Route accordingly.
   TSMBuffer bufp = nullptr;
   TSMLoc hdr_loc = TS_NULL_MLOC;
   if (TS_SUCCESS == TSHttpTxnClientReqGet(txnp, &bufp, &hdr_loc)) {
-    TSMLoc const field_loc = TSMimeHdrFieldFind(bufp, hdr_loc, conf->global_skip_header.c_str(), conf->global_skip_header.length());
+    TSMLoc const field_loc = TSMimeHdrFieldFind(bufp, hdr_loc, conf->global_skip_header.data(), conf->global_skip_header.length());
     if (TS_NULL_MLOC != field_loc) {
       LOG_DEBUG("global_skip_header found, disabling for the rest of this transaction");
       TSHandleMLocRelease(bufp, hdr_loc, field_loc);
@@ -335,6 +341,40 @@ global_skip_check(TSCont const contp, TSHttpTxn const txnp, TxnData *const txn_d
 }
 
 /**
+ * Determine the transaction trace.
+ * Called during remap if pregen.
+ * Otherwise called during send_request_hdr_hook.
+ */
+std::string
+txn_trace_for(TxnData const *const txn_data, TSHttpTxn const txnp)
+{
+  std::string trace;
+
+  Config const *const conf = txn_data->config;
+
+  if (!conf->passthru) {
+    if (!txn_data->client_trace.empty()) {
+      LOG_DEBUG("Generating trace from client trace");
+      trace = next_trace(txn_data->client_trace, txnp);
+      LOG_DEBUG("Propagated trace: '%s'", trace.c_str());
+    }
+
+    // If no or bad client_trace then create one
+    if (trace.empty() && conf->create_if_none) {
+      trace = create_trace(txnp);
+      LOG_DEBUG("Created trace: '%s'", trace.c_str());
+    }
+  }
+
+  // otherwise just pass the client one through
+  if (trace.empty()) {
+    trace = txn_data->client_trace;
+  }
+
+  return trace;
+}
+
+/**
  * The TS_EVENT_HTTP_SEND_REQUEST_HDR callback.
  *
  * When a parent request is made, this function adds the new
@@ -343,35 +383,29 @@ global_skip_check(TSCont const contp, TSHttpTxn const txnp, TxnData *const txn_d
 void
 send_server_request(TSHttpTxn const txnp, TxnData *const txn_data)
 {
+  TSAssert(nullptr != txn_data);
   Config const *const conf = txn_data->config;
+
   if (txn_data->this_trace.empty()) {
-    if (conf->passthru) {
-      txn_data->this_trace = txn_data->client_trace;
-    } else if (!txn_data->client_trace.empty()) {
-      txn_data->this_trace = next_trace(txn_data->client_trace, txnp);
-    } else if (conf->create_if_none) {
-      txn_data->this_trace = create_trace(txnp);
+    if (!conf->pregen()) { // if failed during pregen don't try again
+      txn_data->this_trace = txn_trace_for(txn_data, txnp);
     }
   }
 
-  if (txn_data->this_trace.empty()) {
-    if (conf->create_if_none) {
-      LOG_DEBUG("Unable to deal with client trace '%s', creating new", txn_data->client_trace.c_str());
-      txn_data->this_trace = create_trace(txnp);
+  // There is a trace header to pass on
+  if (!txn_data->this_trace.empty()) {
+    LOG_DEBUG("Setting upstream trace header: '%s'", txn_data->this_trace.c_str());
+    TSMBuffer bufp = nullptr;
+    TSMLoc hdr_loc = TS_NULL_MLOC;
+    if (TS_SUCCESS == TSHttpTxnServerReqGet(txnp, &bufp, &hdr_loc)) {
+      if (!set_header(bufp, hdr_loc, txn_data->config->header, txn_data->this_trace)) {
+        LOG_ERROR("Unable to set the server request trace header '%s'", txn_data->this_trace.c_str());
+      }
     } else {
-      LOG_DEBUG("Unable to deal with client trace '%s', passing through!", txn_data->client_trace.c_str());
-      txn_data->this_trace = txn_data->client_trace;
-    }
-  }
-
-  TSMBuffer bufp = nullptr;
-  TSMLoc hdr_loc = TS_NULL_MLOC;
-  if (TS_SUCCESS == TSHttpTxnServerReqGet(txnp, &bufp, &hdr_loc)) {
-    if (!set_header(bufp, hdr_loc, txn_data->config->header, txn_data->this_trace)) {
-      LOG_ERROR("Unable to set the server request trace header '%s'", txn_data->this_trace.c_str());
+      LOG_ERROR("Unable to get the txn server request");
     }
   } else {
-    LOG_ERROR("Unable to get the txn server request");
+    LOG_DEBUG("No trace header to pass on!");
   }
 }
 
@@ -462,67 +496,53 @@ check_request_header(TSHttpTxn const txnp, Config const *const conf, PluginType 
       if (!hdr_value || length <= 0) {
         LOG_DEBUG("ignoring, corrupt trace header.");
       } else {
-        txn_data         = new TxnData;
-        txn_data->config = conf;
-        txn_data->client_trace.assign(hdr_value, length);
-        LOG_DEBUG("found monetrace header: '%.*s', length: %d", length, hdr_value, length);
+        txn_data               = new TxnData;
+        txn_data->config       = conf;
+        txn_data->client_trace = std::string(hdr_value, length);
+        LOG_DEBUG("found client header: '%s'", txn_data->client_trace.c_str());
       }
       TSHandleMLocRelease(bufp, hdr_loc, field_loc);
-    } else if (!conf->passthru && conf->create_if_none) {
-      txn_data             = new TxnData;
-      txn_data->config     = conf;
-      txn_data->this_trace = create_trace(txnp);
-      LOG_DEBUG("created trace header: '%s'", txn_data->this_trace.c_str());
+    } else if (conf->create_if_none) { // create place holder
+      txn_data         = new TxnData;
+      txn_data->config = conf;
     } else {
       LOG_DEBUG("no trace header handling for this request.");
     }
 
-    // Check for pregen_header
-    if (nullptr != txn_data && !conf->pregen_header.empty()) {
-      if (txn_data->this_trace.empty()) {
-        txn_data->this_trace = next_trace(txn_data->client_trace, txnp);
+    // in this case the plugin handles the money trace header
+    if (nullptr != txn_data) {
+      // Pregen means we resolve the transaction trace now
+      if (conf->pregen()) {
+        txn_data->this_trace = txn_trace_for(txn_data, txnp);
 
-        if (txn_data->this_trace.empty()) {
-          if (conf->create_if_none) {
-            LOG_DEBUG("Unable to deal with client trace '%s', creating new", txn_data->client_trace.c_str());
-            txn_data->this_trace = create_trace(txnp);
-          } else {
-            LOG_DEBUG("Unable to deal with client trace '%s', passing through!", txn_data->client_trace.c_str());
-            txn_data->this_trace = txn_data->client_trace;
+        if (!txn_data->this_trace.empty()) {
+          if (!set_header(bufp, hdr_loc, conf->pregen_header, txn_data->this_trace)) {
+            LOG_ERROR("Unable to set the client request pregen trace header.");
           }
         }
       }
-      if (!txn_data->this_trace.empty()) {
-        if (!set_header(bufp, hdr_loc, conf->pregen_header, txn_data->this_trace)) {
-          LOG_ERROR("Unable to set the client request pregen trace header.");
+
+      // Schedule appropriate continuations
+      TSCont const contp = TSContCreate(transaction_handler, nullptr);
+      if (nullptr != contp) {
+        TSContDataSet(contp, txn_data);
+        TSHttpTxnHookAdd(txnp, TS_HTTP_TXN_CLOSE_HOOK, contp);
+
+        // global plugin may need to check for skip header
+        if (GLOBAL == ptype && !conf->global_skip_header.empty()) {
+          TSHttpTxnHookAdd(txnp, TS_HTTP_POST_REMAP_HOOK, contp);
+        } else {
+          if (conf->create_if_none || !txn_data->client_trace.empty()) {
+            TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_REQUEST_HDR_HOOK, contp);
+          }
+          if (!txn_data->client_trace.empty()) {
+            TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_RESPONSE_HDR_HOOK, contp);
+          }
         }
-      }
-    }
-  } else {
-    LOG_DEBUG("unable to get the request request");
-  }
-
-  // Schedule appropriate continuations
-  if (nullptr != txn_data) {
-    TSCont const contp = TSContCreate(transaction_handler, nullptr);
-    if (nullptr != contp) {
-      TSContDataSet(contp, txn_data);
-      TSHttpTxnHookAdd(txnp, TS_HTTP_TXN_CLOSE_HOOK, contp);
-
-      // global plugin may need to check for skip header
-      if (GLOBAL == ptype && !conf->global_skip_header.empty()) {
-        TSHttpTxnHookAdd(txnp, TS_HTTP_POST_REMAP_HOOK, contp);
       } else {
-        if (conf->create_if_none || !txn_data->client_trace.empty()) {
-          TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_REQUEST_HDR_HOOK, contp);
-        }
-        if (!txn_data->client_trace.empty()) {
-          TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_RESPONSE_HDR_HOOK, contp);
-        }
+        LOG_ERROR("failed to create the transaction handler continuation");
+        delete txn_data;
       }
-    } else {
-      LOG_ERROR("failed to create the transaction handler continuation");
-      delete txn_data;
     }
   }
 }
@@ -550,7 +570,17 @@ DbgCtl dbg_ctl{PLUGIN_NAME};
 TSReturnCode
 TSRemapInit(TSRemapInterface *api_info, char *errbuf, int errbuf_size)
 {
-  CHECK_REMAP_API_COMPATIBILITY(api_info, errbuf, errbuf_size);
+  if (!api_info) {
+    strncpy(errbuf, "[tsremap_init] - Invalid TSRemapInterface argument", errbuf_size - 1);
+    return TS_ERROR;
+  }
+
+  if (api_info->tsremap_version < TSREMAP_VERSION) {
+    snprintf(errbuf, errbuf_size, "[TSRemapInit] - Incorrect API version %ld.%ld", api_info->tsremap_version >> 16,
+             (api_info->tsremap_version & 0xffff));
+    return TS_ERROR;
+  }
+
   LOG_DEBUG("money_trace remap is successfully initialized.");
 
   return TS_SUCCESS;
