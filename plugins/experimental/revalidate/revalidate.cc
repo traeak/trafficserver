@@ -23,7 +23,7 @@
 
 #include "ts/ts.h"
 #include "ts/remap.h"
-#include "ts/experimental.h"
+#include "ts/remap_version.h"
 #include "regex.h"
 
 #include <array>
@@ -43,18 +43,18 @@
 #include <sys/types.h>
 #include <vector>
 
-#define __FILENAME__        (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
-#define DEBUG_LOG(fmt, ...) TSDebug(PLUGIN_NAME, "[%s:% 4d] %s(): " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
-
-#define ERROR_LOG(fmt, ...)                                                                         \
-  TSError("[%s/%s:% 4d] %s(): " fmt, PLUGIN_NAME, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__); \
+#define PLUGIN_NAME         "revalidate"
+#define DEBUG_LOG(fmt, ...) Dbg(dbg_ctl, "[%s:%d] %s(): " fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
+#define ERROR_LOG(fmt, ...)                                                   \
+  TSError("[%s:%d] %s(): " fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
   DEBUG_LOG(fmt, ##__VA_ARGS__)
 
 namespace
 {
 
-constexpr char const *const PLUGIN_NAME = "revalidate";
-constexpr char const *const PASS_HEADER = "X-Revalidate-Rule";
+DbgCtl dbg_ctl{PLUGIN_NAME};
+
+constexpr std::string_view DefaultPassHeader = {"X-Revalidate-Rule"};
 
 // stats management
 constexpr char const *const stat_name_count = "plugin.revalidate_count";
@@ -67,7 +67,7 @@ create_stats()
   if (TS_ERROR == stat_id_count && TS_ERROR == TSStatFindName(stat_name_count, &stat_id_count)) {
     stat_id_count = TSStatCreate(stat_name_count, TS_RECORDDATATYPE_INT, TS_STAT_NON_PERSISTENT, TS_STAT_SYNC_COUNT);
     if (TS_ERROR != stat_id_count) {
-      TSDebug(PLUGIN_NAME, "Created stat '%s'", stat_name_count);
+      DEBUG_LOG("Created stat '%s'", stat_name_count);
     }
   }
 }
@@ -77,16 +77,16 @@ increment_stat()
 {
   if (TS_ERROR != stat_id_count) {
     TSStatIntIncrement(stat_id_count, 1);
-    TSDebug(PLUGIN_NAME, "Incrementing stat '%s'", stat_name_count);
+    DEBUG_LOG("Incrementing stat '%s'", stat_name_count);
   }
 }
 
 struct Rule {
   std::string regex_text{};
-  Regex regex{};
-  time_t epoch{0};
-  time_t expiry{0};
-  int64_t timestamp{0}; // ms
+  Regex       regex{};
+  time_t      epoch{0};
+  time_t      expiry{0};
+  int64_t     timestamp{0}; // ms
 
   Rule()                      = default;
   Rule(Rule &&orig)           = default;
@@ -153,13 +153,13 @@ iequals(std::string_view const lhs, std::string_view const rhs)
 
 struct PluginState {
   std::filesystem::path rule_path{};
-  std::string pass_header{PASS_HEADER};
-  time_t rule_path_time{0};
-  time_t min_expiry{0};
-  std::atomic<int64_t> timestamp{0}; // do we need this in the file?
+  std::string           pass_header{DefaultPassHeader};
+  time_t                rule_path_time{0};
+  time_t                min_expiry{0};
+  std::atomic<int64_t>  timestamp{0}; // do we need this in the file?
   // sorted by regex_text
   std::shared_ptr<std::vector<Rule>> rules{std::make_shared<std::vector<Rule>>()};
-  TSTextLogObject log{nullptr};
+  TSTextLogObject                    log{nullptr};
 
   PluginState() = default;
 
@@ -219,7 +219,7 @@ Rule::from_string(std::string_view const str, time_t const timenow)
   DEBUG_LOG("Parsing string: '%.*s'", (int)str.size(), str.data());
 
   std::array<std::string_view, 3> fields;
-  std::size_t const nfields = split(str, &fields);
+  std::size_t const               nfields = split(str, &fields);
   if (nfields != fields.size()) {
     DEBUG_LOG("Unable to split '%.*s'", (int)str.size(), str.data());
     return rule;
@@ -238,8 +238,8 @@ Rule::from_string(std::string_view const str, time_t const timenow)
     return rule;
   }
 
-  std::string_view const sver = fields[FIELD_VER];
-  int64_t timestamp           = 0;
+  std::string_view const sver      = fields[FIELD_VER];
+  int64_t                timestamp = 0;
   std::from_chars(sver.data(), sver.data() + sver.length(), timestamp);
   if (timestamp <= 0) {
     DEBUG_LOG("Unable to parse timestamp from: '%.*s'", (int)sver.size(), sver.data());
@@ -287,8 +287,8 @@ Rule::to_string() const
 void
 PluginState::log_config(std::shared_ptr<std::vector<Rule>> const &newrules) const
 {
-  if (TSIsDebugTagSet(PLUGIN_NAME) || nullptr != this->log) {
-    TSDebug(PLUGIN_NAME, "Current config: %s", this->rule_path.c_str());
+  if (dbg_ctl.on() || nullptr != this->log) {
+    DEBUG_LOG("Current config: %s", this->rule_path.c_str());
     if (nullptr != this->log) {
       TSTextLogObjectWrite(log, "Current config: %s", this->rule_path.c_str());
     }
@@ -296,13 +296,13 @@ PluginState::log_config(std::shared_ptr<std::vector<Rule>> const &newrules) cons
     if (rules && !rules->empty()) {
       for (Rule const &rule : *newrules) {
         std::string const info = rule.info_string();
-        TSDebug(PLUGIN_NAME, info.c_str());
+        DEBUG_LOG("%s", info.c_str());
         if (nullptr != this->log) {
           TSTextLogObjectWrite(this->log, info.c_str());
         }
       }
     } else {
-      TSDebug(PLUGIN_NAME, "Configuration EMPTY");
+      DEBUG_LOG("Configuration EMPTY");
       if (nullptr != this->log) {
         TSTextLogObjectWrite(this->log, "EMPTY");
       }
@@ -361,7 +361,7 @@ PluginState::from_args(int argc, char const **argv)
 time_t
 time_for_file(std::filesystem::path const &filepath)
 {
-  time_t mtime{0};
+  time_t      mtime{0};
   struct stat fstat;
   if (0 == stat(filepath.c_str(), &fstat)) {
     mtime = fstat.st_mtime;
@@ -386,8 +386,8 @@ load_rules_from(std::filesystem::path const &path, time_t const timenow)
 
   // load from file, last one wins
   std::map<std::string, Rule> loaded;
-  int lineno = 0;
-  char line[LINE_MAX];
+  int                         lineno = 0;
+  char                        line[LINE_MAX];
   while (nullptr != fgets(line, LINE_MAX, fs)) {
     ++lineno;
     line[strcspn(line, "\r\n")] = '\0';
@@ -414,7 +414,7 @@ load_rules_from(std::filesystem::path const &path, time_t const timenow)
     if (!rule.expired(timenow)) {
       rules->push_back(std::move(elem.second));
     } else {
-      if (TSIsDebugTagSet(PLUGIN_NAME)) {
+      if (dbg_ctl.on()) {
         std::string const str = rule.info_string();
         DEBUG_LOG("Not adding expired rule: '%s'", str.c_str());
       }
@@ -470,8 +470,8 @@ set_rule_header(TSHttpTxn const txnp, std::string_view const header, Rule const 
 
   DEBUG_LOG("Encoded rule: %s", encstr.c_str());
 
-  TSMBuffer bufp = nullptr;
-  TSMLoc lochdr  = TS_NULL_MLOC;
+  TSMBuffer bufp   = nullptr;
+  TSMLoc    lochdr = TS_NULL_MLOC;
 
   if (TS_SUCCESS != TSHttpTxnClientReqGet(txnp, &bufp, &lochdr)) {
     DEBUG_LOG("Unable to get client request from transaction");
@@ -513,8 +513,8 @@ get_rule_header(TSHttpTxn const txnp, std::string_view const header)
 {
   std::string res;
 
-  TSMBuffer bufp = nullptr;
-  TSMLoc lochdr  = TS_NULL_MLOC;
+  TSMBuffer bufp   = nullptr;
+  TSMLoc    lochdr = TS_NULL_MLOC;
 
   if (TS_SUCCESS != TSHttpTxnClientReqGet(txnp, &bufp, &lochdr)) {
     DEBUG_LOG("Unable to get client request from transaction");
@@ -523,7 +523,7 @@ get_rule_header(TSHttpTxn const txnp, std::string_view const header)
 
   TSMLoc const locfield = TSMimeHdrFieldFind(bufp, lochdr, header.data(), (int)header.length());
   if (TS_NULL_MLOC != locfield) {
-    int len               = 0;
+    int               len = 0;
     char const *const str = TSMimeHdrFieldValueStringGet(bufp, lochdr, locfield, -1, &len);
 
     if (nullptr != str && 0 < len) {
@@ -609,8 +609,8 @@ get_date_from_cached_hdr(TSHttpTxn txnp)
 {
   time_t date = 0;
 
-  TSMBuffer bufp = nullptr;
-  TSMLoc lochdr  = TS_NULL_MLOC;
+  TSMBuffer bufp   = nullptr;
+  TSMLoc    lochdr = TS_NULL_MLOC;
 
   if (TSHttpTxnCachedRespGet(txnp, &bufp, &lochdr) == TS_SUCCESS) {
     TSMLoc const locdate = TSMimeHdrFieldFind(bufp, lochdr, TS_MIME_FIELD_DATE, TS_MIME_LEN_DATE);
@@ -627,16 +627,16 @@ get_date_from_cached_hdr(TSHttpTxn txnp)
 int
 cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
 {
-  TSHttpTxn txnp            = (TSHttpTxn)edata;
-  int status                = TS_ERROR;
-  time_t const timenow      = time(nullptr);
-  PluginState *const pstate = static_cast<PluginState *>(TSContDataGet(cont));
+  TSHttpTxn          txnp    = (TSHttpTxn)edata;
+  int                status  = TS_ERROR;
+  time_t const       timenow = time(nullptr);
+  PluginState *const pstate  = static_cast<PluginState *>(TSContDataGet(cont));
 
   std::shared_ptr<std::vector<Rule>> rules;
 
   // look for incoming rule and merge into current list
   std::string const ruleline = get_rule_header(txnp, pstate->pass_header);
-  Rule newrule;
+  Rule              newrule;
   if (!ruleline.empty()) {
     DEBUG_LOG("Rule from header: %s", ruleline.c_str());
     std::string const decoded = percent_decode(ruleline);
@@ -677,8 +677,8 @@ cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
       switch (status) {
       case TS_CACHE_LOOKUP_HIT_FRESH: {
         time_t cached_date = 0;
-        char *url          = nullptr;
-        int url_len        = 0;
+        char  *url         = nullptr;
+        int    url_len     = 0;
 
         bool matched = false;
 
@@ -756,8 +756,8 @@ cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
           TSAssert(nullptr != rules);
         }
 
-        char *url   = nullptr;
-        int url_len = 0;
+        char *url     = nullptr;
+        int   url_len = 0;
 
         // check for matching rule to pass along
         for (Rule const &rule : *rules) {
@@ -803,7 +803,7 @@ process_rules(PluginState *const pstate)
     return false;
   }
 
-  time_t const timenow                        = time(NULL);
+  time_t const                       timenow  = time(NULL);
   std::shared_ptr<std::vector<Rule>> newrules = load_rules_from(pstate->rule_path, timenow);
 
   std::shared_ptr<std::vector<Rule>> oldrules = std::atomic_load(&(pstate->rules));

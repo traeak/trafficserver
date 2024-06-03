@@ -50,10 +50,10 @@ get_jit_stack(void *)
 bool
 Regex::compile(const char *pattern, const unsigned flags)
 {
-  const char *error = nullptr;
-  int erroffset     = -1;
-  int options       = 0;
-  int study_opts    = 0;
+  const char *error      = nullptr;
+  int         erroffset  = -1;
+  int         options    = 0;
+  int         study_opts = 0;
 
   if (nullptr != this->regex) {
     return false;

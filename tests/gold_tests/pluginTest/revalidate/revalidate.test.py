@@ -34,16 +34,12 @@ Basic revalidate plugin test
 # If the rule disappears from revalidate.conf its still loaded!!
 # A rule's expiry can't be changed after the fact!
 
-Test.SkipUnless(
-    Condition.PluginExists('revalidate.so'),
-    Condition.PluginExists('xdebug.so')
-)
+Test.SkipUnless(Condition.PluginExists('revalidate.so'), Condition.PluginExists('xdebug.so'))
 
 # set up proxy verifier
 """Initialize test"""
 replay_file = "replay/revalidate.replay.yaml"
 server = Test.MakeVerifierServerProcess("server", replay_file)
-
 """Configure ATS instances"""
 mid = Test.MakeATSProcess("mid")
 
@@ -53,12 +49,13 @@ mid.Disk.plugin_config.AddLines([
     'revalidate.so --rule-path=revalidate.conf',
 ])
 
-mid.Disk.records_config.update({
-    'proxy.config.diags.debug.enabled': 1,
-    'proxy.config.diags.debug.tags': 'revalidate',
-    'proxy.config.http.insert_age_in_response': 0,
-    'proxy.config.http.response_via_str': 3,
-})
+mid.Disk.records_config.update(
+    {
+        'proxy.config.diags.debug.enabled': 1,
+        'proxy.config.diags.debug.tags': 'revalidate',
+        'proxy.config.http.insert_age_in_response': 0,
+        'proxy.config.http.response_via_str': 3,
+    })
 
 mid.Disk.logging_yaml.AddLine(
     '''logging:
@@ -68,12 +65,9 @@ mid.Disk.logging_yaml.AddLine(
  logs:
   - filename: transaction
     format: custom
-'''
-)
+''')
 
-mid.Disk.remap_config.AddLines([
-    f"map / http://127.0.0.1:{server.Variables.http_port}"
-])
+mid.Disk.remap_config.AddLines([f"map / http://127.0.0.1:{server.Variables.http_port}"])
 
 edge = Test.MakeATSProcess("edge")
 
@@ -82,12 +76,13 @@ edge.Disk.plugin_config.AddLines([
     'revalidate.so --rule-path=revalidate.conf',
 ])
 
-edge.Disk.records_config.update({
-    'proxy.config.diags.debug.enabled': 1,
-    'proxy.config.diags.debug.tags': 'revalidate',
-    'proxy.config.http.insert_age_in_response': 0,
-    'proxy.config.http.response_via_str': 3,
-})
+edge.Disk.records_config.update(
+    {
+        'proxy.config.diags.debug.enabled': 1,
+        'proxy.config.diags.debug.tags': 'revalidate',
+        'proxy.config.http.insert_age_in_response': 0,
+        'proxy.config.http.response_via_str': 3,
+    })
 
 edge.Disk.logging_yaml.AddLine(
     '''logging:
@@ -97,12 +92,9 @@ edge.Disk.logging_yaml.AddLine(
  logs:
   - filename: transaction
     format: custom
-'''
-)
+''')
 
-edge.Disk.remap_config.AddLines([
-    f"map / http://127.0.0.1:{mid.Variables.port}"
-])
+edge.Disk.remap_config.AddLines([f"map / http://127.0.0.1:{mid.Variables.port}"])
 
 Test.testName = "revalidate"
 Test.Setup.Copy("metrics.sh")
@@ -115,13 +107,9 @@ timenow = time.time()
 path1_rule = 'path1 {} {}\n'.format(int(timenow) + 600, int(timenow * 1000))
 
 # Define first revision for when trafficserver starts
-edge.Disk.File(revalidate_conf_path, typename="ats:config").AddLine(
-    "# Empty"
-)
+edge.Disk.File(revalidate_conf_path, typename="ats:config").AddLine("# Empty")
 
-mid.Disk.File(revalidate_conf_path, typename="ats:config").AddLine(
-    "# Empty"
-)
+mid.Disk.File(revalidate_conf_path, typename="ats:config").AddLine("# Empty")
 
 # 0 Test - Load cache (miss) (path1)
 tr = Test.AddTestRun("Cache miss path1")
@@ -169,9 +157,7 @@ ps = tr.Processes.Default
 # of the new config file versus the old is greater than the granularity
 # of the time stamp used. (The config file write happens after the delay.)
 tr.DelayStart = 1
-tr.Disk.File(revalidate_conf_path, typename="ats:config").AddLines([
-    path1_rule
-])
+tr.Disk.File(revalidate_conf_path, typename="ats:config").AddLines([path1_rule])
 tr.StillRunningAfter = edge
 tr.StillRunningAfter = mid
 tr.StillRunningAfter = server
@@ -207,10 +193,9 @@ ps = tr.Processes.Default
 # of the time stamp used. (The config file write happens after the delay.)
 tr.DelayStart = 1
 timenow = time.time()
-tr.Disk.File(revalidate_conf_path, typename="ats:config").AddLines([
-    path1_rule,
-    'path2 {} {}'.format(int(timenow) + 700, int(timenow * 1000))
-])
+tr.Disk.File(
+    revalidate_conf_path,
+    typename="ats:config").AddLines([path1_rule, 'path2 {} {}'.format(int(timenow) + 700, int(timenow * 1000))])
 tr.StillRunningAfter = edge
 tr.StillRunningAfter = mid
 tr.StillRunningAfter = server
@@ -249,10 +234,9 @@ ps = tr.Processes.Default
 # of the time stamp used. (The config file write happens after the delay.)
 tr.DelayStart = 1
 timenow = time.time()
-tr.Disk.File(revalidate_conf_path, typename="ats:config").AddLines([
-    path1_rule,
-    'path2 {} {}\n'.format(int(timenow) - 100, int(timenow * 1000))
-])
+tr.Disk.File(
+    revalidate_conf_path,
+    typename="ats:config").AddLines([path1_rule, 'path2 {} {}\n'.format(int(timenow) - 100, int(timenow * 1000))])
 tr.StillRunningAfter = edge
 tr.StillRunningAfter = mid
 tr.StillRunningAfter = server

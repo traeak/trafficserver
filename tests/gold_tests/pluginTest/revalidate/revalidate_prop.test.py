@@ -33,10 +33,7 @@ Revalidate propagation test.
 
 Test.testName = "revalidate_prop"
 
-Test.SkipUnless(
-    Condition.PluginExists('revalidate.so'),
-    Condition.PluginExists('xdebug.so')
-)
+Test.SkipUnless(Condition.PluginExists('revalidate.so'), Condition.PluginExists('xdebug.so'))
 
 # set up proxy verifier
 """Initialize test"""
@@ -53,13 +50,14 @@ def MakeATSInstance(name, server_port):
         'revalidate.so --rule-path=reval.conf',
     ])
 
-    ats.Disk.records_config.update({
-        'proxy.config.diags.debug.enabled': 1,
-        'proxy.config.diags.debug.tags': 'revalidate',
-        'proxy.config.http.insert_request_via_str': 0,
-        'proxy.config.http.insert_response_via_str': 2,
-        'proxy.config.http.response_via_str': name,
-    })
+    ats.Disk.records_config.update(
+        {
+            'proxy.config.diags.debug.enabled': 1,
+            'proxy.config.diags.debug.tags': 'revalidate',
+            'proxy.config.http.insert_request_via_str': 0,
+            'proxy.config.http.insert_response_via_str': 2,
+            'proxy.config.http.response_via_str': name,
+        })
 
     ats.Disk.logging_yaml.AddLine(
         '''logging:
@@ -69,15 +67,12 @@ def MakeATSInstance(name, server_port):
  logs:
   - filename: transaction
     format: custom
-'''
-    )
+''')
 
     ats_path = os.path.join(ats.Variables.CONFIGDIR, 'reval.conf')
     ats.Disk.File(ats_path, typename="ats:config").AddLine("# empty")
 
-    ats.Disk.remap_config.AddLines([
-        f"map / http://127.0.0.1:{server_port}"
-    ])
+    ats.Disk.remap_config.AddLines([f"map / http://127.0.0.1:{server_port}"])
 
     return ats
 
@@ -102,7 +97,6 @@ edge0_proxy = f' -x 127.0.0.1:{edge0.Variables.port}'
 edge1_proxy = f' -x 127.0.0.1:{edge1.Variables.port}'
 
 curl_and_args = 'curl -s -D - -v -H "x-debug: x-cache"'
-
 """ Test """
 
 # preload cache vars
@@ -127,9 +121,10 @@ ps.ReturnCode = 0
 tr = Test.AddTestRun("Load mid config")
 ps = tr.Processes.Default
 tr.DelayStart = 1
-tr.Disk.File(mid_path, typename="ats:config").AddLines([
-    f"bar {expiry} 2",
-])
+tr.Disk.File(
+    mid_path, typename="ats:config").AddLines([
+        f"bar {expiry} 2",
+    ])
 tr.StillRunningAfter = mid
 tr.AddJsonRPCClientRequest(mid, Request.admin_config_reload())
 ps.ReturnCode = 0
@@ -140,10 +135,11 @@ tr.TimeOut = 5
 tr = Test.AddTestRun("Load edge0 config")
 ps = tr.Processes.Default
 tr.DelayStart = 1
-tr.Disk.File(edge0_path, typename="ats:config").AddLines([
-    f"foo {expiry} 1",
-    f"bar {expiry} 2",
-])
+tr.Disk.File(
+    edge0_path, typename="ats:config").AddLines([
+        f"foo {expiry} 1",
+        f"bar {expiry} 2",
+    ])
 tr.StillRunningAfter = edge0
 tr.AddJsonRPCClientRequest(edge0, Request.admin_config_reload())
 ps.ReturnCode = 0
@@ -154,10 +150,11 @@ tr.TimeOut = 5
 tr = Test.AddTestRun("Load edge1 config")
 ps = tr.Processes.Default
 tr.DelayStart = 1
-tr.Disk.File(edge1_path, typename="ats:config").AddLines([
-    f"bar {expiry} 2",
-    f"baz {expiry} 3",
-])
+tr.Disk.File(
+    edge1_path, typename="ats:config").AddLines([
+        f"bar {expiry} 2",
+        f"baz {expiry} 3",
+    ])
 tr.StillRunningAfter = edge1
 tr.AddJsonRPCClientRequest(edge1, Request.admin_config_reload())
 ps.ReturnCode = 0

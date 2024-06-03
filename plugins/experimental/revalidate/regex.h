@@ -56,7 +56,7 @@ public:
   ~Regex();
 
 private:
-  pcre *regex             = nullptr;
+  pcre       *regex       = nullptr;
   pcre_extra *regex_extra = nullptr;
 };
 
