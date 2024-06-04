@@ -15,4 +15,4 @@
 #
 #######################
 
-add_atsplugin(revalidate revalidate.cc PublicKey.cc Rule.cc)
+add_atsplugin(revalidate revalidate.cc PluginState.cc PublicKey.cc Rule.cc)

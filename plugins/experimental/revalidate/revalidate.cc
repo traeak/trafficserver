@@ -26,6 +26,7 @@
 #include "ts/remap.h"
 #include "ts/remap_version.h"
 
+#include "PluginState.h"
 #include "PublicKey.h"
 #include "Rule.h"
 
@@ -34,7 +35,6 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
-#include <getopt.h>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -79,150 +79,6 @@ increment_stat()
     TSStatIntIncrement(stat_id_count, 1);
     DEBUG_LOG("Incrementing stat '%s'", stat_name_count);
   }
-}
-
-struct PluginState {
-  // header used to for passing rule to parent.
-  std::string pass_header{DefaultPassHeader};
-
-  std::filesystem::path rule_path{};
-  std::filesystem::path key_path{};
-
-  time_t rule_path_time{0}; // simple check for rule file change
-  time_t key_path_time{0};  // simple check for key file change
-
-  // optimization, updated with rule changes
-  time_t min_expiry{0};
-
-  // latest rule version.
-  // this version is updated by propagated rules.
-  // and then reset to latest rule version on rule file change.
-  std::atomic<int64_t> version{0};
-
-  // rules sorted by regex_text
-  std::shared_ptr<std::vector<Rule>> rules{std::make_shared<std::vector<Rule>>()};
-
-  // active public keys for signature verification
-  std::shared_ptr<std::vector<PublicKey>> keys{std::make_shared<std::vector<PublicKey>>()};
-
-  TSTextLogObject log{nullptr};
-
-  PluginState() = default;
-
-  PluginState(PluginState const &)            = delete;
-  PluginState(PluginState &&)                 = delete;
-  PluginState &operator=(PluginState const &) = delete;
-  PluginState &operator=(PluginState &&)      = delete;
-
-  ~PluginState()
-  {
-    if (nullptr != log) {
-      TSTextLogObjectDestroy(log);
-      log = nullptr;
-    }
-  }
-
-  bool from_args(int argc, char const **argv);
-  void log_config(std::shared_ptr<std::vector<Rule>> const &newrules) const;
-};
-
-void
-PluginState::log_config(std::shared_ptr<std::vector<Rule>> const &newrules) const
-{
-  if (dbg_ctl.on() || nullptr != this->log) {
-    DEBUG_LOG("Current config: %s", this->rule_path.c_str());
-    if (nullptr != this->log) {
-      TSTextLogObjectWrite(log, "Current config: %s", this->rule_path.c_str());
-    }
-
-    if (rules && !rules->empty()) {
-      for (Rule const &rule : *newrules) {
-        std::string const info = rule.info_string();
-        DEBUG_LOG("%s", info.c_str());
-        if (nullptr != this->log) {
-          TSTextLogObjectWrite(this->log, info.c_str());
-        }
-      }
-    } else {
-      DEBUG_LOG("Configuration EMPTY");
-      if (nullptr != this->log) {
-        TSTextLogObjectWrite(this->log, "EMPTY");
-      }
-    }
-  }
-}
-
-bool
-PluginState::from_args(int argc, char const **argv)
-{
-  constexpr option const longopts[] = {
-    {"header",    required_argument, nullptr, 'h'}, // header for passing rule
-    {"key-path",  required_argument, nullptr, 'k'}, // path to public keys file
-    {"log-path",  required_argument, nullptr, 'l'}, // path to log file
-    {"rule-path", required_argument, nullptr, 'r'}, // path to rule file
-    {nullptr,     0,                 nullptr, 0  },
-  };
-
-  while (true) {
-    int const ch = getopt_long(argc, (char *const *)argv, "h:k:l:r:s:", longopts, nullptr);
-    if (-1 == ch) {
-      break;
-    }
-
-    switch (ch) {
-    case 'h':
-      pass_header = optarg;
-      DEBUG_LOG("Pass Header: %s", pass_header.c_str());
-      break;
-    case 'k':
-      key_path = optarg;
-      if (key_path.is_relative()) {
-        key_path = std::filesystem::path(TSConfigDirGet()) / key_path;
-      }
-      DEBUG_LOG("Key Path: %s", key_path.c_str());
-      break;
-    case 'l':
-      if (TS_SUCCESS == TSTextLogObjectCreate(optarg, TS_LOG_MODE_ADD_TIMESTAMP, &log)) {
-        DEBUG_LOG("Logging Mode enabled");
-      } else {
-        DEBUG_LOG("Unable to set up log");
-      }
-      break;
-    case 'r':
-      rule_path = optarg;
-      if (rule_path.is_relative()) {
-        rule_path = std::filesystem::path(TSConfigDirGet()) / rule_path;
-      }
-      DEBUG_LOG("Rule Path: %s", rule_path.c_str());
-      break;
-    default:
-      break;
-    }
-  }
-
-  if (rule_path.empty()) {
-    ERROR_LOG("Plugin requires a --rule-path=<path name> option");
-    return false;
-  }
-
-  if (key_path.empty()) {
-    DEBUG_LOG("Rule key signing not enabled");
-  }
-
-  return true;
-}
-
-time_t
-time_for_file(std::filesystem::path const &filepath)
-{
-  time_t      mtime{0};
-  struct stat fstat;
-  if (0 == stat(filepath.c_str(), &fstat)) {
-    mtime = fstat.st_mtime;
-  } else {
-    DEBUG_LOG("Could not stat %s", filepath.c_str());
-  }
-  return mtime;
 }
 
 std::string
@@ -526,6 +382,19 @@ cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
 
   TSHttpTxnReenable(txnp, TS_EVENT_HTTP_CONTINUE);
   return 0;
+}
+
+time_t
+time_for_file(std::filesystem::path const &filepath)
+{
+  time_t      mtime{0};
+  struct stat fstat;
+  if (0 == stat(filepath.c_str(), &fstat)) {
+    mtime = fstat.st_mtime;
+  } else {
+    DEBUG_LOG("Could not stat %s", filepath.c_str());
+  }
+  return mtime;
 }
 
 bool
