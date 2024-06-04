@@ -74,9 +74,10 @@ are loaded.
 
 Options::
 
-* --rule_path=<path to rules> (-r): List of rules.
 * --header=<header name> (-h): Propagation header name override.
+* --key_path=<path to keys> (-k): Path to public keys for rule signature check.
 * --log-path=<path to log> (-l): Log of loaded rules.
+* --rule_path=<path to rules> (-r): List of rules.
 
 It is advisable to either use a custom header rule name or remove
 the `X-Revalidate-Rule` header at the incoming edge tier.
@@ -88,7 +89,7 @@ Inside your revalidation rules configuration, each rule line is defined as a
 regular expression followed by an integer which expresses the epoch time at
 which the rule will expire::
 
-    <regular expression> <rule expiry, as seconds since epoch> <MISS or STALE>
+    <regular expression> <rule expiry, as seconds since epoch> <rule version, typically seconds since epoch> [signature]
 
 Blank lines and lines beginning with a ``#`` character are ignored.
 
@@ -108,22 +109,13 @@ expressed as an integer of seconds since epoch (equivalent to the return value
 of :manpage:`time(2)`), after which the forced revalidation will no longer
 occur.
 
-Rule Type
----------
+Rule Version
+------------
 
-Valid values are:
-
-* STALE
-* MISS
-
-By default any matching asset will have its cache lookup status changed
-from HIT_FRESH to either HIT_STALE or HIT_MISS depending on this setting.
-
-STALE should always be the preferred type.  MISS should only be used if
-the origin is known to be defective and not properly handle IMS requests.
-MISS will force a refetch from the parent. *Use with care* as this will
-increase bandwidth to the parent.  During configuration reload, any rule
-which changes it type will be reloaded and treated as a new rule.
+The rule version is used to determine if the rule has been updated. If the
+version of an incoming rule is less than the current rule version,
+the rule is considered expired.  This is useful for rule propagation.
+Rule creation time should be used as the version.
 
 Rule Propagation
 ----------------

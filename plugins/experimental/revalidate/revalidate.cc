@@ -24,7 +24,7 @@
 #include "ts/ts.h"
 #include "ts/remap.h"
 #include "ts/remap_version.h"
-#include "regex.h"
+#include "tsutil/Regex.h"
 
 #include <array>
 #include <atomic>
@@ -42,6 +42,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <vector>
+
+#include <openssl/bio.h>
+#include <openssl/err.h>
+#include <openssl/pem.h>
 
 #define PLUGIN_NAME         "revalidate"
 #define DEBUG_LOG(fmt, ...) Dbg(dbg_ctl, "[%s:%d] %s(): " fmt, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
@@ -82,20 +86,35 @@ increment_stat()
 }
 
 struct Rule {
+  std::string line{}; // original line, for propagation
+
   std::string regex_text{};
-  Regex       regex{};
-  time_t      epoch{0};
   time_t      expiry{0};
-  int64_t     timestamp{0}; // ms
+  std::string signature{};
+
+  Regex   regex{};    // compiled regex
+  time_t  epoch{0};   // time of rule load
+  int64_t version{0}; // typically timestamp
 
   Rule()                      = default;
   Rule(Rule &&orig)           = default;
   Rule &operator=(Rule &&rhs) = default;
   ~Rule()                     = default;
 
-  Rule(Rule const &orig) : regex_text(orig.regex_text), epoch(orig.epoch), expiry(orig.expiry), timestamp(orig.timestamp)
+  Rule(Rule const &orig)
+    : line(orig.line),
+      regex_text(orig.regex_text),
+      expiry(orig.expiry),
+      signature(orig.signature),
+      epoch(orig.epoch),
+      version(orig.version)
   {
-    this->regex.compile(regex_text.c_str());
+    std::string error;
+    int         erroff = 0;
+    if (!this->regex.compile(regex_text, error, erroff)) {
+      DEBUG_LOG("Unable to compile regex: '%s', err: %s, off: %d", regex_text.c_str(), error.c_str(), erroff);
+      this->regex_text.clear(); // signals bad regex
+    }
   }
 
   Rule &
@@ -103,7 +122,7 @@ struct Rule {
   {
     if (&rhs != this) {
       this->~Rule();
-      *this = Rule(rhs);
+      new (this) Rule(rhs);
     }
     return *this;
   }
@@ -118,13 +137,16 @@ struct Rule {
   inline bool
   is_valid() const
   {
-    return !this->regex_text.empty() && this->regex.is_valid() && 0 < timestamp && 0 < expiry && 0 < epoch;
+    return !line.empty() && !regex_text.empty() && 0 < expiry && 0 < epoch && 0 < version;
   }
 
   inline bool
   matches(char const *const url, int const url_len) const
   {
-    return this->regex.matches(std::string_view{url, (unsigned)url_len});
+    if (is_valid()) {
+      return this->regex.exec(std::string_view{url, (unsigned)url_len});
+    }
+    return false;
   }
 
   inline bool
@@ -143,23 +165,101 @@ struct Rule {
   std::string info_string() const;
 };
 
-// case insensitive compare
-inline bool
-iequals(std::string_view const lhs, std::string_view const rhs)
+struct PubKey {
+  EVP_PKEY *key{nullptr};
+
+  PubKey() = default;
+  PubKey(EVP_PKEY *const ikey) { key = ikey; }
+  PubKey(PubKey &&)                 = default;
+  PubKey(PubKey const &)            = delete;
+  PubKey &operator=(PubKey &&)      = default;
+  PubKey &operator=(PubKey const &) = delete;
+  ~PubKey()
+  {
+    if (nullptr != key) {
+      EVP_PKEY_free(key);
+    }
+  }
+
+  bool load(FILE *const fp);
+
+  bool
+  is_valid() const
+  {
+    return nullptr != key;
+  }
+  bool
+  verify(std::string_view const data, std::string_view const sig) const
+  {
+    if (!is_valid()) {
+      return false;
+    }
+
+    EVP_MD_CTX *const ctx = EVP_MD_CTX_new();
+    if (nullptr == ctx) {
+      return false;
+    }
+
+    bool ret = false;
+    if (1 == EVP_DigestVerifyInit(ctx, nullptr, EVP_sha256(), nullptr, key)) {
+      if (1 == EVP_DigestVerifyUpdate(ctx, data.data(), data.length())) {
+        ret = (1 == EVP_DigestVerifyFinal(ctx, (unsigned char const *)sig.data(), sig.length()));
+      }
+    }
+
+    EVP_MD_CTX_free(ctx);
+
+    return ret;
+  }
+};
+
+bool
+PubKey::load(FILE *const fp)
 {
-  return std::equal(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
-                    [](char const lch, char const rch) { return tolower(lch) == tolower(rch); });
+  // unload any existing key
+  if (nullptr != key) {
+    EVP_PKEY_free(key);
+    key = nullptr;
+  }
+
+  key = PEM_read_PUBKEY(fp, nullptr, nullptr, nullptr);
+  if (nullptr == key && dbg_ctl.on()) {
+    BIO *const bio = BIO_new(BIO_s_mem());
+    ERR_print_errors(bio);
+    char      *errbuf = nullptr;
+    long const errlen = BIO_get_mem_data(bio, &errbuf);
+    DEBUG_LOG("Could not read public key from file, errors: %.*s", (int)errlen, errbuf);
+    BIO_free(bio);
+  }
+
+  return nullptr != key;
 }
 
 struct PluginState {
+  // header used to for passing rule to parent.
+  std::string pass_header{DefaultPassHeader};
+
   std::filesystem::path rule_path{};
-  std::string           pass_header{DefaultPassHeader};
-  time_t                rule_path_time{0};
-  time_t                min_expiry{0};
-  std::atomic<int64_t>  timestamp{0}; // do we need this in the file?
-  // sorted by regex_text
+  std::filesystem::path key_path{};
+
+  time_t rule_path_time{0}; // simple check for rule file change
+  time_t key_path_time{0};  // simple check for key file change
+
+  // optimization, updated with rule changes
+  time_t min_expiry{0};
+
+  // latest rule version.
+  // this version is updated by propagated rules.
+  // and then reset to latest rule version on rule file change.
+  std::atomic<int64_t> version{0};
+
+  // rules sorted by regex_text
   std::shared_ptr<std::vector<Rule>> rules{std::make_shared<std::vector<Rule>>()};
-  TSTextLogObject                    log{nullptr};
+
+  // active public keys for signature verification
+  std::shared_ptr<std::vector<PubKey>> keys{std::make_shared<std::vector<PubKey>>()};
+
+  TSTextLogObject log{nullptr};
 
   PluginState() = default;
 
@@ -207,10 +307,12 @@ split(std::string_view str, std::array<std::string_view, Dim> *const fields)
   return aind;
 }
 
-constexpr int FIELD_REG = 0;
-constexpr int FIELD_EXP = 1;
-constexpr int FIELD_VER = 2;
+constexpr int FIELD_REG = 0; // regular expression
+constexpr int FIELD_EXP = 1; // rule expiration
+constexpr int FIELD_VER = 2; // rule version (typically creation time)
 
+// Parse rules from string.
+// Timenow becomes the epoch for new/changed rules.
 Rule
 Rule::from_string(std::string_view const str, time_t const timenow)
 {
@@ -226,28 +328,32 @@ Rule::from_string(std::string_view const str, time_t const timenow)
   }
 
   rule.regex_text = std::string{fields[FIELD_REG]};
-  if (!rule.regex.compile(rule.regex_text.c_str())) {
-    DEBUG_LOG("Unable to compile regex: '%s'", rule.regex_text.c_str());
+  std::string errstr;
+  int         erroff = 0;
+  if (!rule.regex.compile(rule.regex_text, errstr, erroff)) {
+    DEBUG_LOG("Unable to compile regex: '%s', err: %s, off: %d", rule.regex_text.c_str(), errstr.c_str(), erroff);
+    rule.regex_text.clear(); // signals bad regex
     return rule;
   }
 
-  std::string_view const ev = fields[FIELD_EXP];
+  std::string_view const ev{fields[FIELD_EXP]};
   std::from_chars(ev.data(), ev.data() + ev.length(), rule.expiry);
   if (rule.expiry <= 0) {
     DEBUG_LOG("Unable to parse time from: '%.*s'", (int)ev.length(), ev.data());
     return rule;
   }
 
-  std::string_view const sver      = fields[FIELD_VER];
-  int64_t                timestamp = 0;
-  std::from_chars(sver.data(), sver.data() + sver.length(), timestamp);
-  if (timestamp <= 0) {
-    DEBUG_LOG("Unable to parse timestamp from: '%.*s'", (int)sver.size(), sver.data());
+  std::string_view const sver{fields[FIELD_VER]};
+  int64_t                version = 0;
+  std::from_chars(sver.data(), sver.data() + sver.length(), version);
+  if (version <= 0) {
+    DEBUG_LOG("Unable to parse version from: '%.*s'", (int)sver.size(), sver.data());
     return rule;
   } else {
-    rule.timestamp = timestamp;
+    rule.version = version;
   }
 
+  rule.line  = std::string{str};
   rule.epoch = timenow;
 
   return rule;
@@ -258,14 +364,17 @@ Rule::info_string() const
 {
   std::string res;
 
+  // specified fields
   res.append("regex: ");
   res.append(this->regex_text);
-  res.append(" epoch: ");
-  res.append(std::to_string(this->epoch));
   res.append(" expiry: ");
   res.append(std::to_string(this->expiry));
-  res.append(" timestamp: ");
-  res.append(std::to_string(this->timestamp));
+  res.append(" version: ");
+  res.append(std::to_string(this->version));
+
+  // computed fields
+  res.append(" epoch: ");
+  res.append(std::to_string(this->epoch));
 
   return res;
 }
@@ -279,7 +388,7 @@ Rule::to_string() const
   res.push_back(' ');
   res.append(std::to_string(this->expiry));
   res.push_back(' ');
-  res.append(std::to_string(this->timestamp));
+  res.append(std::to_string(this->version));
 
   return res;
 }
@@ -314,14 +423,15 @@ bool
 PluginState::from_args(int argc, char const **argv)
 {
   constexpr option const longopts[] = {
-    {"rule-path", required_argument, nullptr, 'r'},
-    {"log-path",  required_argument, nullptr, 'l'},
-    {"header",    required_argument, nullptr, 'h'},
+    {"header",    required_argument, nullptr, 'h'}, // header for passing rule
+    {"key-path",  required_argument, nullptr, 'k'}, // path to public keys file
+    {"log-path",  required_argument, nullptr, 'l'}, // path to log file
+    {"rule-path", required_argument, nullptr, 'r'}, // path to rule file
     {nullptr,     0,                 nullptr, 0  },
   };
 
   while (true) {
-    int const ch = getopt_long(argc, (char *const *)argv, "h:l:r:s:", longopts, nullptr);
+    int const ch = getopt_long(argc, (char *const *)argv, "h:k:l:r:s:", longopts, nullptr);
     if (-1 == ch) {
       break;
     }
@@ -330,6 +440,13 @@ PluginState::from_args(int argc, char const **argv)
     case 'h':
       pass_header = optarg;
       DEBUG_LOG("Pass Header: %s", pass_header.c_str());
+      break;
+    case 'k':
+      key_path = optarg;
+      if (key_path.is_relative()) {
+        key_path = std::filesystem::path(TSConfigDirGet()) / key_path;
+      }
+      DEBUG_LOG("Key Path: %s", key_path.c_str());
       break;
     case 'l':
       if (TS_SUCCESS == TSTextLogObjectCreate(optarg, TS_LOG_MODE_ADD_TIMESTAMP, &log)) {
@@ -355,6 +472,10 @@ PluginState::from_args(int argc, char const **argv)
     return false;
   }
 
+  if (key_path.empty()) {
+    DEBUG_LOG("Rule key signing not enabled");
+  }
+
   return true;
 }
 
@@ -369,6 +490,30 @@ time_for_file(std::filesystem::path const &filepath)
     DEBUG_LOG("Could not stat %s", filepath.c_str());
   }
   return mtime;
+}
+
+// Load public keys from path.
+std::shared_ptr<std::vector<PubKey>>
+load_keys_from(std::filesystem::path const &path)
+{
+  std::shared_ptr<std::vector<PubKey>> keys = std::make_shared<std::vector<PubKey>>();
+
+  FILE *const fp = fopen(path.c_str(), "r");
+  if (nullptr == fp) {
+    DEBUG_LOG("Could not open key file '%s' for reading", path.c_str());
+    return keys;
+  }
+
+  // Load all public keys from file.
+  PubKey pubkey;
+  while (pubkey.load(fp)) {
+    keys->push_back(std::move(pubkey));
+  }
+
+  fclose(fp);
+
+  DEBUG_LOG("Loaded %zu keys from file '%s'", keys->size(), path.c_str());
+  return keys;
 }
 
 // Load config, rules sorted by regex_text.
@@ -571,7 +716,7 @@ merge_new_rule(std::shared_ptr<std::vector<Rule>> const &rules, Rule *const newr
       // adjust rule expiry or erase it
       if (itold->regex_text == newrule->regex_text) {
         // version check to avoid adding stale rule
-        if (itold->timestamp < newrule->timestamp) {
+        if (itold->version < newrule->version) {
           size_t const index = std::distance(rules->begin(), itold);
           if (newrule->expiry != itold->expiry) {
             newrules = std::make_shared<std::vector<Rule>>(*rules);
@@ -596,9 +741,13 @@ merge_new_rule(std::shared_ptr<std::vector<Rule>> const &rules, Rule *const newr
     }
   }
 
-  DEBUG_LOG("Merged rules");
-  for (auto const &rule : *newrules) {
-    DEBUG_LOG("  '%s'", rule.regex_text.c_str());
+  if (nullptr == newrules) {
+    DEBUG_LOG("New rules are empty");
+  } else {
+    DEBUG_LOG("Merged rules");
+    for (auto const &rule : *newrules) {
+      DEBUG_LOG("  '%s'", rule.regex_text.c_str());
+    }
   }
 
   return newrules;
@@ -645,9 +794,9 @@ cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
     if (newrule.is_valid()) { // may be expired
 
       // check if rule is a newer version
-      int64_t const ptime = pstate->timestamp;
-      if (ptime < newrule.timestamp) {
-        DEBUG_LOG("timestamp pstate: %jd, rule: %jd", ptime, newrule.timestamp);
+      int64_t const pver = pstate->version;
+      if (pver < newrule.version) {
+        DEBUG_LOG("version: pstate: %jd, rule: %jd", pver, newrule.version);
 
         rules = std::atomic_load(&(pstate->rules));
 
@@ -796,6 +945,40 @@ cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
 }
 
 bool
+process_keys(PluginState *const pstate)
+{
+  if (pstate->key_path.empty()) {
+    DEBUG_LOG("Rule signing not enabled");
+    return true;
+  }
+
+  time_t const timepath = time_for_file(pstate->rule_path);
+  if (0 == timepath) {
+    DEBUG_LOG("Key file '%s' requested, but missing", pstate->key_path.c_str());
+    return false;
+  }
+
+  // file unchanged
+  if (timepath == pstate->key_path_time) {
+    DEBUG_LOG("Key file '%s' unchanged", pstate->key_path.c_str());
+    return true;
+  }
+
+  // load keys from path
+  std::shared_ptr<std::vector<PubKey>> newkeys = load_keys_from(pstate->key_path);
+
+  if (newkeys->empty()) {
+    DEBUG_LOG("No keys loaded from file '%s'", pstate->key_path.c_str());
+    return false;
+  }
+
+  std::atomic_store(&(pstate->keys), newkeys);
+  pstate->key_path_time = timepath;
+
+  return true;
+}
+
+bool
 process_rules(PluginState *const pstate)
 {
   time_t const timepath = time_for_file(pstate->rule_path);
@@ -828,7 +1011,7 @@ process_rules(PluginState *const pstate)
       }
       ++itold;
       ++itnew;
-    } else { // if (0 < cres) { // old item not in new
+    } else { // if (0 < cres) // old item not in new
       changed = true;
       ++itnew;
     }
@@ -840,12 +1023,14 @@ process_rules(PluginState *const pstate)
   }
 
   if (changed) {
-    // remove intentionally expired rules, update pstate timestamp
-    int64_t timestamp = pstate->timestamp;
+    // remove intentionally expired rules
+    // Compute new version based on current ruleset.
+    // New propagated rules may update that version.
+    int64_t newver = 0;
 
     itnew = newrules->begin();
     while (newrules->end() != itnew) {
-      timestamp = std::max(timestamp, itnew->timestamp);
+      newver = std::max(newver, itnew->version);
       if (itnew->expired(timenow)) {
         itnew = newrules->erase(itnew);
       } else {
@@ -853,15 +1038,17 @@ process_rules(PluginState *const pstate)
       }
     }
 
-    pstate->timestamp = timestamp;
+    pstate->version = newver;
 
     DEBUG_LOG("Changes detected, new rules installed");
     pstate->log_config(newrules);
 
-    // at this point all rules should share the same timestamp
-    if (!newrules->empty()) {
-      pstate->timestamp = newrules->front().timestamp;
-    }
+    /*
+        // at this point all rules should share the same version (that's a lie?)
+        if (!newrules->empty()) {
+          pstate->version = newrules->front().version;
+        }
+    */
 
     std::atomic_store(&(pstate->rules), newrules);
   }
@@ -882,6 +1069,8 @@ rule_handler(TSCont cont, TSEvent event, void *data)
     DEBUG_LOG("Handling lifecycle message");
   }
   PluginState *const pstate = static_cast<PluginState *>(TSContDataGet(cont));
+  DEBUG_LOG("Reloading keys");
+  process_keys(pstate);
   DEBUG_LOG("Reloading rules");
   process_rules(pstate);
   return TS_EVENT_NONE;
@@ -926,17 +1115,29 @@ TSPluginInit(int argc, char const *argv[])
 
   time_t const timenow = time(nullptr);
 
-  // load rules from path
+  // load keys from path
+  std::shared_ptr<std::vector<PubKey>> newkeys;
+  if (!pstate->key_path.empty()) {
+    pstate->key_path_time = time_for_file(pstate->key_path);
+    newkeys               = load_keys_from(pstate->rule_path);
+    if (newkeys->empty()) {
+      DEBUG_LOG("No keys loaded from file '%s', all rules will be rejected!", pstate->key_path.c_str());
+    } else {
+      std::atomic_store(&(pstate->keys), newkeys);
+    }
+  }
+
+  // load rules from path -- sig check should be done here during load!!!
   std::shared_ptr<std::vector<Rule>> newrules = load_rules_from(pstate->rule_path, timenow);
 
   // set new rules
   if (nullptr != newrules) {
-    int64_t timestamp = 0;
+    int64_t newver = 0;
 
     // scan for latest version and also trim out expired rules
     auto itnew = newrules->begin();
     while (newrules->end() != itnew) {
-      timestamp = std::max(timestamp, itnew->timestamp);
+      newver = std::max(newver, itnew->version);
       if (itnew->expired(timenow)) {
         itnew = newrules->erase(itnew);
       } else {
@@ -944,7 +1145,7 @@ TSPluginInit(int argc, char const *argv[])
       }
     }
 
-    pstate->timestamp = timestamp;
+    pstate->version = newver;
 
     std::atomic_store(&(pstate->rules), newrules);
   }

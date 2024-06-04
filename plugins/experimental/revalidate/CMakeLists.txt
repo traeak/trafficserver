@@ -15,4 +15,4 @@
 #
 #######################
 
-add_atsplugin(revalidate regex.cc revalidate.cc)
+add_atsplugin(revalidate revalidate.cc)
