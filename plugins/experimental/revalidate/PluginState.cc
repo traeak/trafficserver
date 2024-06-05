@@ -63,15 +63,15 @@ bool
 PluginState::from_args(int argc, char const **argv)
 {
   constexpr struct option const longopts[] = {
-    {"header",    required_argument, nullptr, 'h'}, // header for passing rule
-    {"key-path",  required_argument, nullptr, 'k'}, // path to public keys file
-    {"log-path",  required_argument, nullptr, 'l'}, // path to log file
-    {"rule-path", required_argument, nullptr, 'r'}, // path to rule file
+    {"header",    required_argument, nullptr, 'h'},
+    {"key-path",  required_argument, nullptr, 'k'},
+    {"log-path",  required_argument, nullptr, 'l'},
+    {"rule-path", required_argument, nullptr, 'r'},
     {nullptr,     0,                 nullptr, 0  },
   };
 
   while (true) {
-    int const ch = getopt_long(argc, (char *const *)argv, "h:k:l:r:s:", longopts, nullptr);
+    int const ch = getopt_long(argc, (char *const *)argv, "h:k:l:r:", longopts, nullptr);
     if (-1 == ch) {
       break;
     }

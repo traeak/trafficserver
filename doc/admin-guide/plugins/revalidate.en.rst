@@ -40,10 +40,9 @@ regular expression against your origin URLs permits. Thus, individual cache
 objects may have rules created for them, or entire path prefixes, or even any
 cache objects with a particular file extension.
 
-Revalidate count stats for MISS and STALE are recorded under:
+Revalidate count stats for STALE are recorded under:
 
-* plugin.revalidate.stale
-* plugin.revalidate.miss
+* plugin.revalidate.count
 
 Installation
 ============
@@ -89,7 +88,15 @@ Inside your revalidation rules configuration, each rule line is defined as a
 regular expression followed by an integer which expresses the epoch time at
 which the rule will expire::
 
-    <regular expression> <rule expiry, as seconds since epoch> <rule version, typically seconds since epoch> [signature]
+    <regex> <rule expiry> <rule version> [signature]
+
+Explanation of the fields::
+
+* ``<regex>``: A PCRE style regular expression which will be matched against
+  the remapped URL of cache objects.
+* ``<rule expiry>``: Seconds since epoch at which the rule will expire.
+* ``<rule version>``: Rule version, typically UTC creationg time.
+* ``[signature]``: Optional signature of the rule.
 
 Blank lines and lines beginning with a ``#`` character are ignored.
 
@@ -128,15 +135,28 @@ client facing.
 This plugin adds rule propagation. During the `cache lookup complete`
 hook the following happens:
 
+Resolve and Merge Rules if Applicable:
 * Client request is checked for the `X-Revalidate-Rule` header.
-** If valid rule, merge with the current loaded rule set.
-*** Expired rule can be used to erase an existing rule.
-* If request is cache hit:
-** Check against the merged new rule for STALE/MISS.
-** If necessary, continue checking the remaining rules.
-* If request is cache miss:
-** Check for existing matching rule.
-* If any matching applicable rule, (re)set the upstream header.
+ ** Verify rule signature if applicable.
+ ** If valid rule, merge with the current loaded rule set.
+ ** Expired rule can be used to erase an existing rule.
+
+Process current transaction:
+* If request is cache hit, look for matching rules.
+  ** First check against the merged new rule.
+  ** If necessary, continue checking the remaining rules.
+* Mark as STALE for matching rule with Date < rule expoch.
+* Set the upstream header for matching rule.
+* DONE.
+
+Find Matching Rule:
+* If current transaction is not cache hit, find newest matching rule.
+* Set the upstream header to matching rule.
+* DONE.
+
+In order to pass a message along the rule regex will be percent
+encoded as part of the header message.
+The rule regex is decoded before signature check.
 
 Caveats
 =======
@@ -152,31 +172,19 @@ the fact that the plugin uses :c:data:`TS_HTTP_CACHE_LOOKUP_COMPLETE_HOOK`.
 Removing Rules
 --------------
 
-While new rules are added dynamically (the configuration file is checked every
-60 seconds for changes), rule lines removed from the configuration file do not
-currently lead to that rule being removed from the running plugin. In these
-cases, if the rule must be taken out of service, a service restart may be
-necessary.
-
-State File
-----------
-
-The state file is not meant to be edited but is of the format::
-
-<regular expression> <rule epoch> <rule expiry> <type>
-
+Rules can be removed by removing the rule from the rules file
+and either running `traffic_ctl config reload` or
+`traffic_ctl plugin msg revalidate reload`.
+This will reset the current in memory rules list and key file, including
+the current rule version.
 
 Examples
 ========
 
 The following rule would cause the cache object whose origin server is
-``origin.tld`` and whose path is ``/images/foo.jpg`` to be revalidated by force
+``origin.tld`` and whose path is ``/images/foo.jpg`` to be revalidated
 in |TS| until 6:47:27 AM on Saturday, November 14th, 2015 (UTC)::
 
-    http://origin\.tld/images/foo\.jpg 1447483647
+    http://origin\.tld/images/foo\.jpg 1447483647 1
 
 Note the escaping of the ``.`` metacharacter in the rule's regular expression.
-
-Alternatively the following rule would case a refetch from the parent::
-
-    http://origin\.tld/images/foo\.jpg 1447483647 MISS

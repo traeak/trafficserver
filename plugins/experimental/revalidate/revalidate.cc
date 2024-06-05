@@ -57,7 +57,7 @@ namespace
 constexpr std::string_view DefaultPassHeader = {"X-Revalidate-Rule"};
 
 // stats management
-constexpr char const *const stat_name_count = "plugin.revalidate_count";
+constexpr char const *const stat_name_count = "plugin.revalidate.count";
 
 int stat_id_count = TS_ERROR;
 
@@ -81,51 +81,18 @@ increment_stat()
   }
 }
 
-std::string
-percent_encode(std::string_view const to_enc)
-{
-  std::string res;
-  res.resize(to_enc.length() * 3);
-  size_t len = 0;
-  if (TS_SUCCESS == TSStringPercentEncode(to_enc.data(), (int)to_enc.length(), res.data(), res.size(), &len, nullptr)) {
-    res.resize(len);
-  } else {
-    res.clear();
-  }
-
-  return res;
-}
-
-std::string
-percent_decode(std::string_view const to_dec)
-{
-  std::string res;
-  res.resize(to_dec.length());
-  size_t len = 0;
-  if (TS_SUCCESS == TSStringPercentDecode(to_dec.data(), to_dec.length(), res.data(), res.size(), &len)) {
-    res.resize(len);
-  } else {
-    res.clear();
-  }
-
-  return res;
-}
-
 bool
 set_rule_header(TSHttpTxn const txnp, std::string_view const header, Rule const &rule)
 {
   bool ret = false;
 
   // percent encode the rule
-  std::string const rulestr = rule.to_string();
+  std::string const rulestr = rule.to_header_string();
   DEBUG_LOG("rulestr: %s", rulestr.c_str());
-  std::string const encstr = percent_encode(rulestr);
-  if (encstr.empty()) {
-    DEBUG_LOG("Error percent encoding rule");
+  if (rulestr.empty()) {
+    DEBUG_LOG("Error making percent encoded rule");
     return ret;
   }
-
-  DEBUG_LOG("Encoded rule: %s", encstr.c_str());
 
   TSMBuffer bufp   = nullptr;
   TSMLoc    lochdr = TS_NULL_MLOC;
@@ -140,7 +107,7 @@ set_rule_header(TSHttpTxn const txnp, std::string_view const header, Rule const 
   if (TS_NULL_MLOC == locfield) {
     // create header
     if (TS_SUCCESS == TSMimeHdrFieldCreateNamed(bufp, lochdr, header.data(), header.length(), &locfield)) {
-      if (TS_SUCCESS == TSMimeHdrFieldValueStringSet(bufp, lochdr, locfield, -1, encstr.data(), (int)encstr.length())) {
+      if (TS_SUCCESS == TSMimeHdrFieldValueStringSet(bufp, lochdr, locfield, -1, rulestr.data(), (int)rulestr.length())) {
         TSMimeHdrFieldAppend(bufp, lochdr, locfield);
       }
     }
@@ -151,7 +118,7 @@ set_rule_header(TSHttpTxn const txnp, std::string_view const header, Rule const 
       TSMLoc const tmp = TSMimeHdrFieldNextDup(bufp, lochdr, locfield);
       if (first) {
         first = false;
-        if (TS_SUCCESS == TSMimeHdrFieldValueStringSet(bufp, lochdr, locfield, -1, encstr.data(), (int)encstr.length())) {
+        if (TS_SUCCESS == TSMimeHdrFieldValueStringSet(bufp, lochdr, locfield, -1, rulestr.data(), (int)rulestr.length())) {
           ret = true;
         }
       } else {
@@ -228,9 +195,7 @@ cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
   Rule              newrule;
   if (!ruleline.empty()) {
     DEBUG_LOG("Rule from header: %s", ruleline.c_str());
-    std::string const decoded = percent_decode(ruleline);
-    DEBUG_LOG("Decoded from header: %s", decoded.c_str());
-    newrule = Rule::from_string(decoded, timenow);
+    newrule = Rule::from_header_string(ruleline, timenow);
     if (newrule.is_valid()) { // may be expired
 
       // check if rule is a newer version

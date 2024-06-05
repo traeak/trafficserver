@@ -42,7 +42,11 @@ struct Rule {
   time_t  epoch{0};   // time of rule load
   int64_t version{0}; // typically timestamp
 
+  // loadable string
   static Rule from_string(std::string_view const str, time_t const epoch);
+
+  // header string, percent decode the regex
+  static Rule from_header_string(std::string_view const str, time_t const epoch);
 
   Rule()                      = default;
   Rule(Rule &&orig)           = default;
@@ -61,6 +65,9 @@ struct Rule {
 
   // informational string (debug)
   std::string info_string() const;
+
+  // header string, percent encode just the regex
+  std::string to_header_string() const;
 };
 
 // Load rules from a file rules sorted by regex

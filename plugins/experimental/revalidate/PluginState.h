@@ -48,7 +48,9 @@ struct PluginState {
   time_t rule_path_time{0}; // simple check for rule file change
   time_t key_path_time{0};  // simple check for key file change
 
-  time_t min_expiry{0}; // optimization, updated with rule changes
+  // Minimum expiry time for active rules.
+  // This is used to optimize the rule matching.
+  time_t min_expiry{0};
 
   // latest rule version.
   // this version is updated by propagated rules.

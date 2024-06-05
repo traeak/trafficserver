@@ -113,6 +113,27 @@ Rule::from_string(std::string_view const str, time_t const timenow)
   return rule;
 }
 
+// static function
+Rule
+Rule::from_header_string(std::string_view const str, time_t const timenow)
+{
+  Rule rule;
+
+  // just percent decode the whole string
+  std::string decoded;
+  decoded.resize(str.size());
+  size_t len = 0;
+
+  if (TS_SUCCESS != TSStringPercentDecode(str.data(), str.size(), decoded.data(), decoded.size(), &len)) {
+    DEBUG_LOG("Unable to percent decode string: '%.*s'", (int)str.size(), str.data());
+  } else {
+    decoded.resize(len);
+    rule = Rule::from_string(decoded, timenow);
+  }
+
+  return rule;
+}
+
 Rule::Rule(Rule const &orig)
   : line(orig.line),
     regex_text(orig.regex_text),
@@ -192,6 +213,31 @@ Rule::to_string() const
   std::string res;
 
   res.append(this->regex_text);
+  res.push_back(' ');
+  res.append(std::to_string(this->expiry));
+  res.push_back(' ');
+  res.append(std::to_string(this->version));
+
+  return res;
+}
+
+std::string
+Rule::to_header_string() const
+{
+  std::string res;
+
+  std::string regperc;
+  regperc.resize(this->regex_text.length() * 3); // worst case
+  size_t len = 0;
+
+  if (TS_SUCCESS != TSStringPercentEncode(this->regex_text.data(), (int)this->regex_text.length(), regperc.data(), regperc.size(),
+                                          &len, nullptr)) {
+    DEBUG_LOG("Unable to percent encode regex: '%s'", this->regex_text.c_str());
+    return res;
+  }
+  regperc.resize(len);
+
+  res.append(regperc);
   res.push_back(' ');
   res.append(std::to_string(this->expiry));
   res.push_back(' ');
