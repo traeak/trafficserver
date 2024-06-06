@@ -190,14 +190,41 @@ cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
 
   std::shared_ptr<std::vector<Rule>> rules;
 
-  // look for incoming rule and merge into current list
+  // merge any incoming rules
   std::string const ruleline = get_rule_header(txnp, pstate->pass_header);
   Rule              newrule;
   if (!ruleline.empty()) {
     DEBUG_LOG("Rule from header: %s", ruleline.c_str());
     newrule = Rule::from_header_string(ruleline, timenow);
-    if (newrule.is_valid()) { // may be expired
 
+    if (newrule.is_valid()) { // may be expired
+                              //
+      // discard if signature is invalid
+      if (pstate->use_signing()) {
+        bool sigok = false;
+
+        if (newrule.is_signed()) {
+          std::shared_ptr<std::vector<PublicKey>> const keys = std::atomic_load(&(pstate->keys));
+          if (keys) {
+            for (PublicKey const &key : *keys) {
+              if (key.verify(newrule)) {
+                sigok = true;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!sigok) {
+          DEBUG_LOG("Rule not signed or signature invalid");
+          newrule = Rule{};
+        }
+      } else if (newrule.is_signed()) {
+        DEBUG_LOG("Rule signed but no keys specified in configs!");
+      }
+    }
+
+    if (newrule.is_valid()) {
       // check if rule is a newer version
       int64_t const pver = pstate->version;
       if (pver < newrule.version) {
@@ -222,6 +249,7 @@ cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
     }
   }
 
+  // check against current rule set
   DEBUG_LOG("event: %s", TSHttpEventNameLookup(event));
 
   switch (event) {
@@ -246,7 +274,7 @@ cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
             if (nullptr != url && 0 < url_len) {
               DEBUG_LOG("url to evaluate: '%.*s'", url_len, url);
 
-              if (newrule.matches(url, url_len)) {
+              if (newrule.matches(std::string_view(url, url_len))) {
                 TSHttpTxnCacheLookupStatusSet(txnp, TS_CACHE_LOOKUP_HIT_STALE);
                 increment_stat();
                 DEBUG_LOG("Forced revalidate - %.*s", url_len, url);
@@ -285,7 +313,7 @@ cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
                 DEBUG_LOG("url to evaluate: '%.*s'", url_len, url);
               }
 
-              if (rule.matches(url, url_len)) {
+              if (rule.matches(std::string_view(url, url_len))) {
                 TSHttpTxnCacheLookupStatusSet(txnp, TS_CACHE_LOOKUP_HIT_STALE);
                 DEBUG_LOG("Forced revalidate - %.*s", url_len, url);
 
@@ -324,7 +352,7 @@ cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
               }
               DEBUG_LOG("url to evaluate: '%.*s'", url_len, url);
             }
-            if (rule.matches(url, url_len)) {
+            if (rule.matches(std::string_view(url, url_len))) {
               // Set/Replace the rule to a header
               set_rule_header(txnp, pstate->pass_header, rule);
               break;

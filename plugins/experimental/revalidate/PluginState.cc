@@ -118,3 +118,9 @@ PluginState::from_args(int argc, char const **argv)
 
   return true;
 }
+
+bool
+PluginState::use_signing() const
+{
+  return !key_path.empty();
+}

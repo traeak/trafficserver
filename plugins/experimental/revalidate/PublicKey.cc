@@ -24,6 +24,7 @@
 #include "PublicKey.h"
 
 #include "revalidate.h"
+#include "Rule.h"
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -55,6 +56,16 @@ PublicKey::verify(std::string_view const data, std::string_view const sig) const
 
   EVP_MD_CTX_free(ctx);
 
+  return ret;
+}
+
+bool
+PublicKey::verify(Rule const &rule) const
+{
+  bool ret = false;
+  if (rule.is_signed()) {
+    ret = verify(rule.line_without_signature(), rule.signature);
+  }
   return ret;
 }
 

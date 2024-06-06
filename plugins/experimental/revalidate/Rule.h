@@ -32,6 +32,12 @@
 #include <vector>
 
 struct Rule {
+  // load from a space separated string
+  static Rule from_string(std::string_view const str, time_t const epoch);
+
+  // decode regex then load from string
+  static Rule from_header_string(std::string_view const str, time_t const epoch);
+
   std::string line{}; // original line, for propagation
 
   std::string regex_text{};
@@ -42,12 +48,6 @@ struct Rule {
   time_t  epoch{0};   // time of rule load
   int64_t version{0}; // typically timestamp
 
-  // loadable string
-  static Rule from_string(std::string_view const str, time_t const epoch);
-
-  // header string, percent decode the regex
-  static Rule from_header_string(std::string_view const str, time_t const epoch);
-
   Rule()                      = default;
   Rule(Rule &&orig)           = default;
   Rule &operator=(Rule &&rhs) = default;
@@ -55,10 +55,21 @@ struct Rule {
 
   Rule(Rule const &orig);
   Rule &operator=(Rule const &rhs);
-  bool  operator<(Rule const &rhs) const;
-  bool  is_valid() const;
-  bool  matches(char const *const url, int const url_len) const;
-  bool  expired(time_t const timenow) const;
+
+  // compare rules by regex text, for sorting
+  bool operator<(Rule const &rhs) const;
+
+  // check if rule is valid in its current state
+  bool is_valid() const;
+
+  // check if rule is signed
+  bool is_signed() const;
+
+  // perform regex match
+  bool matches(std::string_view const url) const;
+
+  // check if rule expired compared to timenow
+  bool expired(time_t const timenow) const;
 
   // loadable string
   std::string to_string() const;
@@ -68,6 +79,9 @@ struct Rule {
 
   // header string, percent encode just the regex
   std::string to_header_string() const;
+
+  // line without trailing signature
+  std::string_view line_without_signature() const;
 };
 
 // Load rules from a file rules sorted by regex

@@ -36,6 +36,7 @@ namespace
 constexpr int FIELD_REG = 0; // regular expression
 constexpr int FIELD_EXP = 1; // rule expiration
 constexpr int FIELD_VER = 2; // rule version (typically creation time)
+constexpr int FIELD_SIG = 3; // rule version (typically creation time)
 
 template <std::size_t Dim>
 std::size_t
@@ -74,9 +75,9 @@ Rule::from_string(std::string_view const str, time_t const timenow)
 
   DEBUG_LOG("Parsing string: '%.*s'", (int)str.size(), str.data());
 
-  std::array<std::string_view, 3> fields;
+  std::array<std::string_view, 4> fields;
   std::size_t const               nfields = split(str, &fields);
-  if (nfields != fields.size()) {
+  if (nfields < 3) {
     DEBUG_LOG("Unable to split '%.*s'", (int)str.size(), str.data());
     return rule;
   }
@@ -105,6 +106,11 @@ Rule::from_string(std::string_view const str, time_t const timenow)
     return rule;
   } else {
     rule.version = version;
+  }
+
+  std::string_view const ssig{fields[FIELD_SIG]};
+  if (!ssig.empty()) {
+    rule.signature = std::string{ssig};
   }
 
   rule.line  = std::string{str};
@@ -169,14 +175,20 @@ Rule::operator<(Rule const &rhs) const
 bool
 Rule::is_valid() const
 {
-  return !line.empty() && !regex_text.empty() && 0 < expiry && 0 < epoch && 0 < version;
+  return !this->line.empty() && !this->regex_text.empty() && 0 < this->expiry && 0 < this->epoch && 0 < this->version;
 }
 
 bool
-Rule::matches(char const *const url, int const url_len) const
+Rule::is_signed() const
+{
+  return is_valid() && !this->signature.empty();
+}
+
+bool
+Rule::matches(std::string_view const url) const
 {
   if (is_valid()) {
-    return this->regex.exec(std::string_view{url, (unsigned)url_len});
+    return this->regex.exec(url);
   }
   return false;
 }
@@ -243,6 +255,19 @@ Rule::to_header_string() const
   res.push_back(' ');
   res.append(std::to_string(this->version));
 
+  return res;
+}
+
+std::string_view
+Rule::line_without_signature() const
+{
+  std::string_view res{this->line};
+  if (is_signed()) {
+    res.remove_suffix(this->signature.size() + 1);
+    while (!res.empty() && ' ' == res.back()) {
+      res.remove_suffix(1);
+    }
+  }
   return res;
 }
 

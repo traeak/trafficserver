@@ -77,4 +77,7 @@ struct PluginState {
   bool from_args(int argc, char const **argv);
 
   void log_config(std::shared_ptr<std::vector<Rule>> const &newrules) const;
+
+  // if key path specified then rule signing is in play.
+  bool use_signing() const;
 };

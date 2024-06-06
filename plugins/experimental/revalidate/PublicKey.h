@@ -31,6 +31,8 @@
 #include <string_view>
 #include <vector>
 
+class Rule;
+
 struct PublicKey {
   EVP_PKEY *key{nullptr};
 
@@ -49,7 +51,10 @@ struct PublicKey {
 
   bool load(FILE *const fp);
   bool is_valid() const;
+
   bool verify(std::string_view const data, std::string_view const sig) const;
+
+  bool verify(Rule const &rule) const;
 };
 
 // Load public keys from path.
