@@ -124,3 +124,24 @@ PluginState::use_signing() const
 {
   return !key_path.empty();
 }
+
+bool
+PluginState::verify_sig(Rule const &rule) const
+{
+  bool ret = false;
+  if (rule.is_signed()) {
+    std::shared_ptr<std::vector<PublicKey>> const keys = std::atomic_load(&(this->keys));
+
+    if (keys && !keys->empty()) {
+      for (PublicKey const &key : *keys) {
+        ret = key.verify(rule.line_without_signature(), rule.signature);
+        if (ret) {
+          break;
+        }
+      }
+    }
+  } else {
+    DEBUG_LOG("Rule is not signed");
+  }
+  return ret;
+}

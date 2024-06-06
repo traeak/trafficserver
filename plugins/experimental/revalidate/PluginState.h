@@ -80,4 +80,7 @@ struct PluginState {
 
   // if key path specified then rule signing is in play.
   bool use_signing() const;
+
+  // verify rule against public keys.
+  bool verify_sig(Rule const &rule) const;
 };

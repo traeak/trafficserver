@@ -198,29 +198,10 @@ cache_lookup_handler(TSCont cont, TSEvent event, void *edata)
     newrule = Rule::from_header_string(ruleline, timenow);
 
     if (newrule.is_valid()) { // may be expired
-                              //
       // discard if signature is invalid
-      if (pstate->use_signing()) {
-        bool sigok = false;
-
-        if (newrule.is_signed()) {
-          std::shared_ptr<std::vector<PublicKey>> const keys = std::atomic_load(&(pstate->keys));
-          if (keys) {
-            for (PublicKey const &key : *keys) {
-              if (key.verify(newrule)) {
-                sigok = true;
-                break;
-              }
-            }
-          }
-        }
-
-        if (!sigok) {
-          DEBUG_LOG("Rule not signed or signature invalid");
-          newrule = Rule{};
-        }
-      } else if (newrule.is_signed()) {
-        DEBUG_LOG("Rule signed but no keys specified in configs!");
+      if (pstate->use_signing() && !pstate->verify_sig(newrule)) {
+        DEBUG_LOG("Rule not signed or signature invalid");
+        newrule = Rule{};
       }
     }
 
