@@ -84,10 +84,6 @@ struct Rule {
   std::string_view line_without_signature() const;
 };
 
-// Load rules from a file rules sorted by regex
-// Will always return a valid (but maybe empty) vector.
-std::shared_ptr<std::vector<Rule>> load_rules_from(std::filesystem::path const &path, time_t const timenow);
-
 // incoming rule must be valid, although can be expired
 // "newrule" will be modified to match an already existing rule if not expired.
 std::shared_ptr<std::vector<Rule>> merge_new_rule(std::shared_ptr<std::vector<Rule>> const &rules, Rule *const newrule);

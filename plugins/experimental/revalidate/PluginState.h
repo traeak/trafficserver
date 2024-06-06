@@ -83,4 +83,10 @@ struct PluginState {
 
   // verify rule against public keys.
   bool verify_sig(Rule const &rule) const;
+
+  // load rules from file.
+  std::shared_ptr<std::vector<Rule>> load_rules(time_t const timenow) const;
+
+  // load keys from file.
+  std::shared_ptr<std::vector<PublicKey>> load_keys() const;
 };

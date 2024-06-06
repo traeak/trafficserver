@@ -392,7 +392,7 @@ process_keys(PluginState *const pstate)
   }
 
   // load keys from path
-  std::shared_ptr<std::vector<PublicKey>> newkeys = load_keys_from(pstate->key_path);
+  std::shared_ptr<std::vector<PublicKey>> newkeys = pstate->load_keys();
 
   if (newkeys->empty()) {
     DEBUG_LOG("No keys loaded from file '%s'", pstate->key_path.c_str());
@@ -414,7 +414,7 @@ process_rules(PluginState *const pstate)
   }
 
   time_t const                       timenow  = time(NULL);
-  std::shared_ptr<std::vector<Rule>> newrules = load_rules_from(pstate->rule_path, timenow);
+  std::shared_ptr<std::vector<Rule>> newrules = pstate->load_rules(timenow);
 
   std::shared_ptr<std::vector<Rule>> oldrules = std::atomic_load(&(pstate->rules));
 
@@ -546,7 +546,7 @@ TSPluginInit(int argc, char const *argv[])
   std::shared_ptr<std::vector<PublicKey>> newkeys;
   if (!pstate->key_path.empty()) {
     pstate->key_path_time = time_for_file(pstate->key_path);
-    newkeys               = load_keys_from(pstate->rule_path);
+    newkeys               = pstate->load_keys();
     if (newkeys->empty()) {
       DEBUG_LOG("No keys loaded from file '%s', all rules will be rejected!", pstate->key_path.c_str());
     } else {
@@ -554,8 +554,8 @@ TSPluginInit(int argc, char const *argv[])
     }
   }
 
-  // load rules from path -- sig check should be done here during load!!!
-  std::shared_ptr<std::vector<Rule>> newrules = load_rules_from(pstate->rule_path, timenow);
+  // load rules from path
+  std::shared_ptr<std::vector<Rule>> newrules = pstate->load_rules(timenow);
 
   // set new rules
   if (nullptr != newrules) {

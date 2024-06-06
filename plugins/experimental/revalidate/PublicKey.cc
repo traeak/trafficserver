@@ -79,26 +79,3 @@ PublicKey::load(FILE *const fp)
 
   return nullptr != key;
 }
-
-std::shared_ptr<std::vector<PublicKey>>
-load_keys_from(std::filesystem::path const &path)
-{
-  std::shared_ptr<std::vector<PublicKey>> keys = std::make_shared<std::vector<PublicKey>>();
-
-  FILE *const fp = fopen(path.c_str(), "r");
-  if (nullptr == fp) {
-    DEBUG_LOG("Could not open key file '%s' for reading", path.c_str());
-    return keys;
-  }
-
-  // Load all public keys from file.
-  PublicKey pubkey;
-  while (pubkey.load(fp)) {
-    keys->push_back(std::move(pubkey));
-  }
-
-  fclose(fp);
-
-  DEBUG_LOG("Loaded %zu keys from file '%s'", keys->size(), path.c_str());
-  return keys;
-}

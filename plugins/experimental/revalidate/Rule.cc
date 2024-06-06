@@ -27,7 +27,6 @@
 
 #include <array>
 #include <charconv>
-#include <map>
 #include <string>
 
 namespace
@@ -269,57 +268,6 @@ Rule::line_without_signature() const
     }
   }
   return res;
-}
-
-std::shared_ptr<std::vector<Rule>>
-load_rules_from(std::filesystem::path const &path, time_t const timenow)
-{
-  std::shared_ptr<std::vector<Rule>> rules = std::make_shared<std::vector<Rule>>();
-
-  FILE *const fs = fopen(path.c_str(), "r");
-  if (nullptr == fs) {
-    DEBUG_LOG("Could not open %s for reading", path.c_str());
-    return rules;
-  }
-
-  // load from file, last one wins
-  std::map<std::string, Rule> loaded;
-  int                         lineno = 0;
-  char                        line[LINE_MAX];
-  while (nullptr != fgets(line, LINE_MAX, fs)) {
-    ++lineno;
-    line[strcspn(line, "\r\n")] = '\0';
-    if (0 < strlen(line) && '#' != line[0]) {
-      Rule rnew = Rule::from_string(line, timenow);
-      if (rnew.is_valid()) {
-        loaded[rnew.regex_text] = std::move(rnew);
-      } else {
-        DEBUG_LOG("Invalid rule '%s' from line: '%d'", line, lineno);
-      }
-    }
-  }
-
-  fclose(fs);
-
-  if (loaded.empty()) {
-    DEBUG_LOG("No rules loaded from file '%s'", path.c_str());
-    return rules;
-  }
-
-  rules->reserve(loaded.size());
-  for (auto &elem : loaded) {
-    Rule &rule = elem.second;
-    if (!rule.expired(timenow)) {
-      rules->push_back(std::move(elem.second));
-    } else {
-      if (dbg_ctl.on()) {
-        std::string const str = rule.info_string();
-        DEBUG_LOG("Not adding expired rule: '%s'", str.c_str());
-      }
-    }
-  }
-
-  return rules;
 }
 
 std::shared_ptr<std::vector<Rule>>

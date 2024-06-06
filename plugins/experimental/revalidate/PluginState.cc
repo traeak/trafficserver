@@ -24,6 +24,7 @@
 #include "PluginState.h"
 
 #include <getopt.h>
+#include <map>
 
 PluginState::~PluginState()
 {
@@ -144,4 +145,84 @@ PluginState::verify_sig(Rule const &rule) const
     DEBUG_LOG("Rule is not signed");
   }
   return ret;
+}
+
+std::shared_ptr<std::vector<Rule>>
+PluginState::load_rules(time_t const timenow) const
+{
+  std::shared_ptr<std::vector<Rule>> rules = std::make_shared<std::vector<Rule>>();
+
+  FILE *const fs = fopen(this->rule_path.c_str(), "r");
+  if (nullptr == fs) {
+    DEBUG_LOG("Could not open %s for reading", this->rule_path.c_str());
+    return rules;
+  }
+
+  // load from file, last one wins
+  std::map<std::string, Rule> loaded;
+  int                         lineno = 0;
+  char                        line[LINE_MAX];
+  while (nullptr != fgets(line, LINE_MAX, fs)) {
+    ++lineno;
+    line[strcspn(line, "\r\n")] = '\0';
+    if (0 < strlen(line) && '#' != line[0]) {
+      Rule rnew = Rule::from_string(line, timenow);
+      if (rnew.is_valid()) {
+        // check rule signature
+        if (this->use_signing() && !this->verify_sig(rnew)) {
+          DEBUG_LOG("Invalid signature for rule '%s' from line: '%d'", line, lineno);
+          continue;
+        }
+
+        loaded[rnew.regex_text] = std::move(rnew);
+      } else {
+        DEBUG_LOG("Invalid rule '%s' from line: '%d'", line, lineno);
+      }
+    }
+  }
+
+  fclose(fs);
+
+  if (loaded.empty()) {
+    DEBUG_LOG("No rules loaded from file '%s'", this->rule_path.c_str());
+    return rules;
+  }
+
+  rules->reserve(loaded.size());
+  for (auto &elem : loaded) {
+    Rule &rule = elem.second;
+    if (!rule.expired(timenow)) {
+      rules->push_back(std::move(elem.second));
+    } else {
+      if (dbg_ctl.on()) {
+        std::string const str = rule.info_string();
+        DEBUG_LOG("Not adding expired rule: '%s'", str.c_str());
+      }
+    }
+  }
+
+  return rules;
+}
+
+std::shared_ptr<std::vector<PublicKey>>
+PluginState::load_keys() const
+{
+  std::shared_ptr<std::vector<PublicKey>> keys = std::make_shared<std::vector<PublicKey>>();
+
+  FILE *const fp = fopen(this->key_path.c_str(), "r");
+  if (nullptr == fp) {
+    DEBUG_LOG("Could not open key file '%s' for reading", this->key_path.c_str());
+    return keys;
+  }
+
+  // Load all public keys from file.
+  PublicKey pubkey;
+  while (pubkey.load(fp)) {
+    keys->push_back(std::move(pubkey));
+  }
+
+  fclose(fp);
+
+  DEBUG_LOG("Loaded %zu keys from file '%s'", keys->size(), this->key_path.c_str());
+  return keys;
 }

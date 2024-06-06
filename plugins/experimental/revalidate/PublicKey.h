@@ -24,12 +24,9 @@
 #pragma once
 
 #include <cstdio>
-#include <filesystem>
-#include <memory>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <string_view>
-#include <vector>
 
 struct PublicKey {
   EVP_PKEY *key{nullptr};
@@ -52,6 +49,3 @@ struct PublicKey {
 
   bool verify(std::string_view const data, std::string_view const sig) const;
 };
-
-// Load public keys from path.
-std::shared_ptr<std::vector<PublicKey>> load_keys_from(std::filesystem::path const &path);
