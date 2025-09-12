@@ -463,6 +463,35 @@ METHOD
 The HTTP method (e.g. ``GET``, ``HEAD``, ``POST``, and so on) used by the
 client for this transaction.
 
+NEXT-HOP
+~~~~~~~~
+::
+
+    cond %{NEXT-HOP:<part>} <operand>
+
+Returns next hop current selected parent information.  The following qualifiers
+are supported::
+
+    %{NEXT-HOP:HOST} Name of the current selected parent.
+    %{NEXT-HOP:PORT} Port of the current selected parent.
+    %{NEXT-HOP:STRATEGY} Name of the current strategy (can be "" if not using a strategy)
+
+Note that the ``<part>`` of NEXT-HOP will likely not be available unless
+an origin server connection is attempted at which point it will available
+as part of the ``SEND_REQUEST_HDR_HOOK``.
+
+For example::
+
+    cond %{SEND_REQUEST_HDR_HOOK} [AND]
+    cond %{NEXT-HOP:HOST} =www.firstparent.com
+        set-header Host vhost.firstparent.com
+
+    cond %{SEND_REQUEST_HDR_HOOK} [AND]
+    cond %{NEXT-HOP:HOST} =www.secondparent.com
+        set-header Host vhost.secondparent.com
+
+.. _admin-plugins-header-rewrite-now:
+
 NOW
 ~~~
 ::
@@ -803,6 +832,18 @@ if necessary.
 
 The header's ``<value>`` may be a literal string, or take advantage of
 `String concatenations`_ to calculate a dynamic value for the header.
+
+set-next-hop-strategy
+~~~~~~~~~~~~~~~~~~~~~
+::
+
+  set-next-hop-strategy <name>
+
+Replaces/Sets the current next hop parent selection strategy with
+the matching strategy specified in `strategies.yaml`
+
+Setting to "null" removes the current strategy which will fall back
+to other methods (ie: parent.config or remap to url).
 
 set-redirect
 ~~~~~~~~~~~~

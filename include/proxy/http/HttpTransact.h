@@ -761,11 +761,11 @@ public:
     //  able to defer some work in building the request
     TransactFunc_t pending_work = nullptr;
 
-    HttpRequestData                           request_data;
-    ParentConfigParams                       *parent_params     = nullptr;
-    std::shared_ptr<NextHopSelectionStrategy> next_hop_strategy = nullptr;
-    ParentResult                              parent_result;
-    CacheControlResult                        cache_control;
+    HttpRequestData           request_data;
+    ParentConfigParams       *parent_params     = nullptr;
+    NextHopSelectionStrategy *next_hop_strategy = nullptr;
+    ParentResult              parent_result;
+    CacheControlResult        cache_control;
 
     StateMachineAction_t next_action                      = SM_ACTION_UNDEFINED; // out
     StateMachineAction_t api_next_action                  = SM_ACTION_UNDEFINED; // out

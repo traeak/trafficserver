@@ -51,9 +51,8 @@ SCENARIO("Testing NextHopConsistentHash class, using policy 'consistent_hash'", 
   GIVEN("Loading the consistent-hash-tests.yaml config for 'consistent_hash' tests.")
   {
     // load the configuration strtegies.
-    std::shared_ptr<NextHopSelectionStrategy> strategy;
-    NextHopStrategyFactory                    nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
-    strategy = nhf.strategyInstance("consistent-hash-1");
+    NextHopStrategyFactory          nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
+    NextHopSelectionStrategy *const strategy = nhf.strategyInstance("consistent-hash-1");
 
     WHEN("the config is loaded.")
     {
@@ -190,9 +189,8 @@ SCENARIO("Testing NextHopConsistentHash class (all firstcalls), using policy 'co
 
   GIVEN("Loading the consistent-hash-tests.yaml config for 'consistent_hash' tests.")
   {
-    std::shared_ptr<NextHopSelectionStrategy> strategy;
-    NextHopStrategyFactory                    nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
-    strategy = nhf.strategyInstance("consistent-hash-1");
+    NextHopStrategyFactory          nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
+    NextHopSelectionStrategy *const strategy = nhf.strategyInstance("consistent-hash-1");
 
     WHEN("the config is loaded.")
     {
@@ -300,9 +298,8 @@ SCENARIO("Testing NextHop ignore_self_detect false", "[NextHopConsistentHash]")
   GIVEN("Loading the consistent-hash-tests.yaml config for 'consistent_hash' tests.")
   {
     // load the configuration strtegies.
-    std::shared_ptr<NextHopSelectionStrategy> strategy;
-    NextHopStrategyFactory                    nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
-    strategy = nhf.strategyInstance("ignore-self-detect-false");
+    NextHopStrategyFactory          nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
+    NextHopSelectionStrategy *const strategy = nhf.strategyInstance("ignore-self-detect-false");
 
     HostStatus &hs = HostStatus::instance();
     hs.setHostStatus("localhost", TSHostStatus::TS_HOST_STATUS_DOWN, 0, Reason::SELF_DETECT);
@@ -350,9 +347,8 @@ SCENARIO("Testing NextHop ignore_self_detect true", "[NextHopConsistentHash]")
   GIVEN("Loading the consistent-hash-tests.yaml config for 'consistent_hash' tests.")
   {
     // load the configuration strtegies.
-    std::shared_ptr<NextHopSelectionStrategy> strategy;
-    NextHopStrategyFactory                    nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
-    strategy = nhf.strategyInstance("ignore-self-detect-true");
+    NextHopStrategyFactory          nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
+    NextHopSelectionStrategy *const strategy = nhf.strategyInstance("ignore-self-detect-true");
 
     HostStatus &hs = HostStatus::instance();
     hs.setHostStatus("localhost", TSHostStatus::TS_HOST_STATUS_DOWN, 0, Reason::SELF_DETECT);
@@ -400,9 +396,8 @@ SCENARIO("Testing NextHopConsistentHash same host different port markdown", "[Ne
   GIVEN("Loading the consistent-hash-tests.yaml config for 'consistent_hash' tests.")
   {
     // load the configuration strtegies.
-    std::shared_ptr<NextHopSelectionStrategy> strategy;
-    NextHopStrategyFactory                    nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
-    strategy = nhf.strategyInstance("same-host-different-port");
+    NextHopStrategyFactory          nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
+    NextHopSelectionStrategy *const strategy = nhf.strategyInstance("same-host-different-port");
 
     WHEN("the config is loaded.")
     {
@@ -468,9 +463,8 @@ SCENARIO("Testing NextHopConsistentHash hash_string override", "[NextHopConsiste
   GIVEN("Loading the consistent-hash-tests.yaml config for 'consistent_hash' tests.")
   {
     // load the configuration strtegies.
-    std::shared_ptr<NextHopSelectionStrategy> strategy;
-    NextHopStrategyFactory                    nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
-    strategy = nhf.strategyInstance("hash-string-override");
+    NextHopStrategyFactory          nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
+    NextHopSelectionStrategy *const strategy = nhf.strategyInstance("hash-string-override");
 
     WHEN("the config is loaded.")
     {
@@ -528,9 +522,8 @@ SCENARIO("Testing NextHopConsistentHash class (alternating rings), using policy 
 
   GIVEN("Loading the consistent-hash-tests.yaml config for 'consistent_hash' tests.")
   {
-    std::shared_ptr<NextHopSelectionStrategy> strategy;
-    NextHopStrategyFactory                    nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
-    strategy = nhf.strategyInstance("consistent-hash-2");
+    NextHopStrategyFactory          nhf(TS_SRC_DIR "/consistent-hash-tests.yaml");
+    NextHopSelectionStrategy *const strategy = nhf.strategyInstance("consistent-hash-2");
 
     WHEN("the config is loaded.")
     {
@@ -647,9 +640,8 @@ SCENARIO("Testing NextHopConsistentHash using a peering ring_mode.")
 
   GIVEN("Loading the peering.yaml config for 'consistent_hash' tests.")
   {
-    std::shared_ptr<NextHopSelectionStrategy> strategy;
-    NextHopStrategyFactory                    nhf(TS_SRC_DIR "/peering.yaml");
-    strategy = nhf.strategyInstance("peering-group-1");
+    NextHopStrategyFactory          nhf(TS_SRC_DIR "/peering.yaml");
+    NextHopSelectionStrategy *const strategy = nhf.strategyInstance("peering-group-1");
 
     WHEN("the config is loaded.")
     {

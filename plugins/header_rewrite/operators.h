@@ -478,3 +478,22 @@ protected:
 private:
   RemapPluginInst *_plugin = nullptr;
 };
+
+class OperatorSetNextHopStrategy : public Operator
+{
+public:
+  OperatorSetNextHopStrategy() { Dbg(dbg_ctl, "Calling CTOR for OperatorSetNextHopStrategy"); }
+
+  // noncopyable
+  OperatorSetNextHopStrategy(const OperatorSetNextHopStrategy &) = delete;
+  void operator=(const OperatorSetNextHopStrategy &)             = delete;
+
+  void initialize(Parser &p) override;
+
+protected:
+  void initialize_hooks() override;
+  void exec(const Resources &res) const override;
+
+private:
+  Value _value;
+};
