@@ -88,7 +88,6 @@ clear_xstr_array(char *v[], size_t vsize)
 }
 
 BUILD_TABLE_INFO::BUILD_TABLE_INFO()
-
 {
   memset(this->paramv, 0, sizeof(this->paramv));
   memset(this->argv, 0, sizeof(this->argv));
@@ -1422,12 +1421,18 @@ remap_parse_config_bti(const char *path, BUILD_TABLE_INFO *bti)
       }
     }
 
+    // Set up for ts API for strategies
+    new_mapping->strategyFactory = bti->rewrite->strategyFactory;
+
     // Check "remap" plugin options and load .so object
     if ((bti->remap_optflg & REMAP_OPTFLG_PLUGIN) != 0 &&
         (maptype == FORWARD_MAP || maptype == FORWARD_MAP_REFERER || maptype == FORWARD_MAP_WITH_RECV_PORT)) {
       if ((remap_check_option((const char **)bti->argv, bti->argc, REMAP_OPTFLG_PLUGIN, &tok_count) & REMAP_OPTFLG_PLUGIN) != 0) {
         int plugin_found_at = 0;
         int jump_to_argc    = 0;
+
+        // Set up for ts API for strategies
+        url_mapping::instance = new_mapping;
 
         // this loads the first plugin
         if (!remap_load_plugin((const char **)bti->argv, bti->argc, new_mapping, errStrBuf, sizeof(errStrBuf), 0, &plugin_found_at,
@@ -1436,6 +1441,7 @@ remap_parse_config_bti(const char *path, BUILD_TABLE_INFO *bti)
           errStr = errStrBuf;
           goto MAP_ERROR;
         }
+
         // this loads any subsequent plugins (if present)
         while (plugin_found_at) {
           jump_to_argc += plugin_found_at;
@@ -1446,6 +1452,8 @@ remap_parse_config_bti(const char *path, BUILD_TABLE_INFO *bti)
             goto MAP_ERROR;
           }
         }
+
+        url_mapping::instance = nullptr;
       }
     }
 
@@ -1466,6 +1474,8 @@ remap_parse_config_bti(const char *path, BUILD_TABLE_INFO *bti)
 
     snprintf(errBuf, sizeof(errBuf), "%s failed to add remap rule at %s line %d: %s", modulePrefix, path, cln + 1, errStr);
     Error("%s", errBuf);
+
+    url_mapping::instance = nullptr;
 
     delete reg_map;
     delete new_mapping;

@@ -208,7 +208,7 @@ ts.Disk.remap_config.AddLines(
 # Tests
 
 # stdout for body, stderr for headers
-curl_and_args = '-s -o /dev/stdout -D /dev/stderr -x localhost:{}'.format(ts.Variables.port)
+curl_and_args = 'curl -s -o /dev/stdout -D /dev/stderr -x localhost:{}'.format(ts.Variables.port)
 
 # header rewrite
 
@@ -221,7 +221,7 @@ for ind in range(len(origins)):
     tr.StillRunningAfter = origin
 ps.StartBefore(dns)
 ps.StartBefore(Test.Processes.ts)
-tr.MakeCurlCommand(curl_and_args + " http://nhp_hr/path", ts=ts)
+ps.Command = curl_and_args + " http://nhp_hr/path"
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh2", "expected nh2")
 tr.StillRunningAfter = ts
@@ -230,7 +230,7 @@ tr.StillRunningAfter = dns
 # 1 - nhs_hr default request
 tr = Test.AddTestRun("nhs_hr straight through request")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + " http://nhs_hr/path", ts=ts)
+ps.Command = curl_and_args + " http://nhs_hr/path"
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh0", "expected nh0")
 tr.StillRunningAfter = ts
@@ -238,7 +238,7 @@ tr.StillRunningAfter = ts
 # 2 - nh0_hr default request
 tr = Test.AddTestRun("nh0_hr straight through request")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + " http://nh0_hr/path", ts=ts)
+ps.Command = curl_and_args + " http://nh0_hr/path"
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh0", "expected nh0")
 tr.StillRunningAfter = ts
@@ -246,7 +246,7 @@ tr.StillRunningAfter = ts
 # 3 - nh1_hr default request
 tr = Test.AddTestRun("nh1_hr straight through request")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + " http://nh1_hr/path", ts=ts)
+ps.Command = curl_and_args + " http://nh1_hr/path"
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh1", "expected nh1")
 tr.StillRunningAfter = ts
@@ -254,7 +254,7 @@ tr.StillRunningAfter = ts
 # 4 - nh2_hr default request
 tr = Test.AddTestRun("nh2_hr straight through request")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + " http://nh2_hr/path", ts=ts)
+ps.Command = curl_and_args + " http://nh2_hr/path"
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh2", "expected nh2")
 tr.StillRunningAfter = ts
@@ -262,7 +262,7 @@ tr.StillRunningAfter = ts
 # 5 switch strategies
 tr = Test.AddTestRun("nh0_hr switch to nh1")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nh0_hr/path -H "Strategy: nh1"', ts=ts)
+ps.Command = curl_and_args + ' http://nh0_hr/path -H "Strategy: nh1"'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh1", "expected nh1")
 tr.StillRunningAfter = ts
@@ -271,7 +271,7 @@ tr.StillRunningAfter = dns
 # 6 strategy to parent.config
 tr = Test.AddTestRun("nh1_hr switch to parent.config")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nh1_hr/path -H "Strategy: null"', ts=ts)
+ps.Command = curl_and_args + ' http://nh1_hr/path -H "Strategy: null"'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh2", "expected nh2")
 tr.StillRunningAfter = ts
@@ -280,7 +280,7 @@ tr.StillRunningAfter = dns
 # 7 parent.config strategy to strategy
 tr = Test.AddTestRun("nh2_hr switch to nh0")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nh2_hr/path -H "Strategy: nh0"', ts=ts)
+ps.Command = curl_and_args + ' http://nh2_hr/path -H "Strategy: nh0"'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh0", "expected nh0")
 tr.StillRunningAfter = ts
@@ -289,7 +289,7 @@ tr.StillRunningAfter = dns
 # 8 try to switch to non existent strategy
 tr = Test.AddTestRun("nh0_hr switch to nemo (fail)")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nh0_hr/path -H "Strategy: nemo"', ts=ts)
+ps.Command = curl_and_args + ' http://nh0_hr/path -H "Strategy: nemo"'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh0", "expected nh0")
 tr.StillRunningAfter = ts
@@ -300,7 +300,7 @@ tr.StillRunningAfter = dns
 # 9 use parent.config
 tr = Test.AddTestRun("nhp_rr parent.config")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nhp_rr/nhp', ts=ts)
+ps.Command = curl_and_args + ' http://nhp_rr/nhp'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh2", "expected nh2")
 tr.StillRunningAfter = ts
@@ -309,7 +309,7 @@ tr.StillRunningAfter = dns
 # 10 use strategies
 tr = Test.AddTestRun("nhs_rr strategies.yaml")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nhs_rr/nh', ts=ts)
+ps.Command = curl_and_args + ' http://nhs_rr/nh'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh0", "expected nh0")
 tr.StillRunningAfter = ts
@@ -318,7 +318,7 @@ tr.StillRunningAfter = dns
 # 11 switch strategies
 tr = Test.AddTestRun("nh0_rr switch to nh1")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nh0_rr/nh0', ts=ts)
+ps.Command = curl_and_args + ' http://nh0_rr/nh0'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh1", "expected nh1")
 tr.StillRunningAfter = ts
@@ -327,7 +327,7 @@ tr.StillRunningAfter = dns
 # 12 strategy to parent.config
 tr = Test.AddTestRun("nh1_rr switch to parent.config")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nh1_rr/nh1', ts=ts)
+ps.Command = curl_and_args + ' http://nh1_rr/nh1'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh2", "expected nh2")
 tr.StillRunningAfter = ts
@@ -336,7 +336,7 @@ tr.StillRunningAfter = dns
 # 13 parent.config strategy to strategy
 tr = Test.AddTestRun("nh2_rr switch to nh0")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nh2_rr/nh2', ts=ts)
+ps.Command = curl_and_args + ' http://nh2_rr/nh2'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh0", "expected nh0")
 tr.StillRunningAfter = ts
@@ -345,7 +345,7 @@ tr.StillRunningAfter = dns
 # 14 switch strategies (fail)
 tr = Test.AddTestRun("nh0_rr switch to nemo")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nh0_rr/nemo', ts=ts)
+ps.Command = curl_and_args + ' http://nh0_rr/nemo'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh0", "expected nh0")
 tr.StillRunningAfter = ts
@@ -356,7 +356,7 @@ tr.StillRunningAfter = dns
 # 15 parent.config
 tr = Test.AddTestRun("nhp_lua parent.config")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nhp_lua/nh', ts=ts)
+ps.Command = curl_and_args + ' http://nhp_lua/nh'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh2", "expected nh2")
 tr.StillRunningAfter = ts
@@ -365,7 +365,7 @@ tr.StillRunningAfter = dns
 # 16 strategies.yaml
 tr = Test.AddTestRun("nhs_lua strategies.yaml")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nhs_lua/nh', ts=ts)
+ps.Command = curl_and_args + ' http://nhs_lua/nh'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh0", "expected nh0")
 tr.StillRunningAfter = ts
@@ -374,7 +374,7 @@ tr.StillRunningAfter = dns
 # 17 switch strategies
 tr = Test.AddTestRun("nh0_lua switch to nh1")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nh0_lua/nh0', ts=ts)
+ps.Command = curl_and_args + ' http://nh0_lua/nh0'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh1", "expected nh1")
 tr.StillRunningAfter = ts
@@ -383,7 +383,7 @@ tr.StillRunningAfter = dns
 # 18 strategy to parent.config
 tr = Test.AddTestRun("nh1_lua switch to parent.config")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nh1_lua/nh1', ts=ts)
+ps.Command = curl_and_args + ' http://nh1_lua/nh1'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh2", "expected nh2")
 tr.StillRunningAfter = ts
@@ -392,7 +392,7 @@ tr.StillRunningAfter = dns
 # 19 parent.config strategy to strategy
 tr = Test.AddTestRun("nh2_lua switch to nh0")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nh2_lua/nh2', ts=ts)
+ps.Command = curl_and_args + ' http://nh2_lua/nh2'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh0", "expected nh0")
 tr.StillRunningAfter = ts
@@ -401,7 +401,7 @@ tr.StillRunningAfter = dns
 # 20 switch strategies, fail
 tr = Test.AddTestRun("nh0_lua switch to nemo")
 ps = tr.Processes.Default
-tr.MakeCurlCommand(curl_and_args + ' http://nh0_lua/nemo', ts=ts)
+ps.Command = curl_and_args + ' http://nh0_lua/nemo'
 ps.ReturnCode = 0
 ps.Streams.stdout.Content = Testers.ContainsExpression("nh0", "expected nh0")
 tr.StillRunningAfter = ts

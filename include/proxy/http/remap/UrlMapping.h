@@ -43,6 +43,7 @@
 #include "tscore/List.h"
 
 class NextHopSelectionStrategy;
+class NextHopStrategyFactory;
 
 /**
  * Used to store http referer strings (and/or regexp)
@@ -118,9 +119,15 @@ public:
   bool              ip_allow_check_enabled_p = false;
   acl_filter_rule  *filter                   = nullptr; // acl filtering (linked list of rules)
   LINK(url_mapping, link);                              // For use with the main Queue linked list holding all the mapping
-  NextHopSelectionStrategy *strategy = nullptr;
-  std::string               remapKey;
-  std::atomic<uint64_t>     _hitCount = 0; // counter can overflow
+
+  NextHopSelectionStrategy *strategy        = nullptr;
+  NextHopStrategyFactory   *strategyFactory = nullptr;
+
+  std::string           remapKey;
+  std::atomic<uint64_t> _hitCount = 0; // counter can overflow
+
+  // For use with the strategies API to be called during TSRemapNewInstance.
+  static inline url_mapping *instance = nullptr;
 
   int
   getRank() const
