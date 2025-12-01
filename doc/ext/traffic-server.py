@@ -469,8 +469,12 @@ REPO_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.environ['DOCUTILSCON
 CONFIGURE_AC = os.path.join(REPO_ROOT, 'configure.ac')
 with open(CONFIGURE_AC, 'r') as f:
     contents = f.read()
-    match = re.compile(r'm4_define\(\[TS_VERSION_S],\[(.*?)]\)').search(contents)
-    autoconf_version = '.'.join(match.group(1).split('.', 2)[:2] + ['x'])
+match = re.search(r'project\(ats VERSION ([0-9\.]+)', contents)
+
+if match:
+    release = '.'.join(match.group(1).split('.', 2)[:2] + ['x'])
+else:
+    release = 'x.y.z'
 
 # Get the current branch the local repository is on.
 # Run git from the repository root to work with both normal repos and worktrees.
