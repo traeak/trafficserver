@@ -142,16 +142,46 @@ bypass_ok(HttpTransact::State *s)
 // wrapper to choose between a remap next hop strategy or use parent.config
 // remap next hop strategy is preferred
 inline static bool
-is_api_result(HttpTransact::State *s)
+host_override(HttpTransact::State *s)
 {
-  bool r = false;
+  bool res = false;
   if (nullptr != s->next_hop_strategy) {
     // remap strategies do not support the TSHttpTxnParentProxySet API.
-    r = false;
+    res = s->next_hop_strategy->host_override;
   } else if (nullptr != s->parent_params) {
-    r = s->parent_result.is_api_result();
+    res = s->parent_result.host_override();
   }
-  return r;
+  return res;
+}
+
+// wrapper to choose between a remap next hop strategy or use parent.config
+// remap next hop strategy is preferred
+inline static bool
+is_some(HttpTransact::State *s)
+{
+  bool res = false;
+  if (nullptr != s->next_hop_strategy) {
+    // remap strategies do not support the TSHttpTxnParentProxySet API.
+    res = s->parent_result.result == ParentResultType::SPECIFIED;
+  } else if (nullptr != s->parent_params) {
+    res = s->parent_result.is_some();
+  }
+  return res;
+}
+
+// wrapper to choose between a remap next hop strategy or use parent.config
+// remap next hop strategy is preferred
+inline static bool
+is_api_result(HttpTransact::State *s)
+{
+  bool res = false;
+  if (nullptr != s->next_hop_strategy) {
+    // remap strategies do not support the TSHttpTxnParentProxySet API.
+    res = false;
+  } else if (nullptr != s->parent_params) {
+    res = s->parent_result.is_api_result();
+  }
+  return res;
 }
 
 // wrapper to get the max_retries.
@@ -207,6 +237,8 @@ retry_type(HttpTransact::State *s)
 inline static void
 findParent(HttpTransact::State *s)
 {
+  TxnDbg(dbg_ctl_http_trans, "findParent");
+
   Metrics::Counter::increment(http_rsb.parent_count);
   if (s->response_action.handled) {
     s->parent_result.hostname = s->response_action.action.hostname;
@@ -295,6 +327,8 @@ parentExists(HttpTransact::State *s)
 inline static void
 nextParent(HttpTransact::State *s)
 {
+  TxnDbg(dbg_ctl_http_trans, "nextParent");
+
   TxnDbg(dbg_ctl_parent_down, "connection to parent %s failed, conn_state: %s, request to origin: %s", s->parent_result.hostname,
          HttpDebugNames::get_server_state_name(s->current.state), s->request_data.get_host());
   Metrics::Counter::increment(http_rsb.parent_count);
@@ -594,15 +628,19 @@ find_server_and_update_current_info(HttpTransact::State *s)
     TxnDbg(dbg_ctl_http_trans, "request is from localhost, so bypass parent");
     s->parent_result.result = ParentResultType::DIRECT;
   } else if (s->method == HTTP_WKSIDX_CONNECT && s->http_config_param->disable_ssl_parenting) {
+    /// BNO
+
     if (s->parent_result.result == ParentResultType::SPECIFIED) {
       nextParent(s);
     } else {
       findParent(s);
     }
-    if (!s->parent_result.is_some() || is_api_result(s) || parent_is_proxy(s)) {
+
+    if (!is_some(s) || is_api_result(s) || parent_is_proxy(s)) {
       TxnDbg(dbg_ctl_http_trans, "request not cacheable, so bypass parent");
       s->parent_result.result = ParentResultType::DIRECT;
     }
+
   } else if (s->txn_conf->uncacheable_requests_bypass_parent && s->txn_conf->no_dns_forward_to_parent == 0 &&
              !HttpTransact::is_request_cache_lookupable(s)) {
     // request not lookupable and cacheable, so bypass parent if the parent is not an origin server.
@@ -616,10 +654,12 @@ find_server_and_update_current_info(HttpTransact::State *s)
     } else {
       findParent(s);
     }
-    if (!s->parent_result.is_some() || is_api_result(s) || parent_is_proxy(s)) {
+
+    if (!is_some(s) || is_api_result(s) || parent_is_proxy(s)) {
       TxnDbg(dbg_ctl_http_trans, "request not cacheable, so bypass parent");
       s->parent_result.result = ParentResultType::DIRECT;
     }
+
   } else {
     switch (s->parent_result.result) {
     case ParentResultType::UNDEFINED:
@@ -660,14 +700,29 @@ find_server_and_update_current_info(HttpTransact::State *s)
   }
 
   switch (s->parent_result.result) {
-  case ParentResultType::SPECIFIED:
-    s->parent_info.name = s->arena.str_store(s->parent_result.hostname, strlen(s->parent_result.hostname));
+  case ParentResultType::SPECIFIED: {
+    char const *const hostname = s->parent_result.hostname;
+    s->parent_info.name        = s->arena.str_store(hostname, strlen(hostname));
+
+    // if host header override option enabled
+    if (host_override(s)) {
+      TxnDbg(dbg_ctl_http_trans, "overriding host header with parent %s", hostname);
+      if (!s->hdr_info.server_request.valid()) {
+        s->hdr_info.client_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
+        s->hdr_info.client_request.mark_target_dirty();
+      } else {
+        s->hdr_info.server_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
+        s->hdr_info.server_request.mark_target_dirty();
+      }
+    }
+
     update_current_info(&s->current, &s->parent_info, ResolveInfo::PARENT_PROXY, false);
     update_dns_info(&s->dns_info, &s->current);
     ink_assert(s->dns_info.looking_up == ResolveInfo::PARENT_PROXY);
     s->next_hop_scheme = URL_WKSIDX_HTTP;
 
     return ResolveInfo::PARENT_PROXY;
+  }
   case ParentResultType::FAIL:
     // No more parents - need to return an error message
     s->current.request_to = ResolveInfo::HOST_NONE;
