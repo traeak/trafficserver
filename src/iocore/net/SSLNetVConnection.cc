@@ -1205,6 +1205,9 @@ SSLNetVConnection::_sslStartHandShake(int event, int &err)
 
       SSL_set_verify(this->ssl, SSL_VERIFY_PEER, verify_callback);
 
+      Dbg(dbg_ctl_ssl, "sni hostname: %s", this->options.sni_hostname ? this->options.sni_hostname : "<>");
+      Dbg(dbg_ctl_ssl, "sni servername: %s", this->options.sni_servername ? this->options.sni_servername : "<>");
+
       // SNI
       ats_scoped_str &tlsext_host_name = this->options.sni_hostname ? this->options.sni_hostname : this->options.sni_servername;
       if (tlsext_host_name) {

@@ -224,6 +224,25 @@ findParent(HttpTransact::State *s)
   } else if (nullptr != s->parent_params) {
     s->parent_params->findParent(&s->request_data, &s->parent_result, s->txn_conf->parent_fail_threshold,
                                  s->txn_conf->parent_retry_time);
+
+    if (s->parent_result.host_override()) {
+      char const *const hostname = s->parent_result.hostname;
+      if (!s->hdr_info.server_request.valid()) {
+        TxnDbg(dbg_ctl_http, "findParent setting server_request header");
+        s->hdr_info.client_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
+      } else {
+        TxnDbg(dbg_ctl_http, "findParent setting client_request header");
+        s->hdr_info.server_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
+        s->hdr_info.server_request.mark_target_dirty();
+      }
+    }
+  }
+
+  char const *const hostname = s->parent_result.hostname;
+  TxnDbg(dbg_ctl_http, "findParent %s", hostname ? hostname : "''");
+
+  if (nullptr != hostname) {
+    s->parent_info.name = s->arena.str_store(hostname, strlen(hostname));
   }
 }
 
@@ -315,6 +334,24 @@ nextParent(HttpTransact::State *s)
   } else if (nullptr != s->parent_params) {
     s->parent_params->nextParent(&s->request_data, &s->parent_result, s->txn_conf->parent_fail_threshold,
                                  s->txn_conf->parent_retry_time);
+    if (s->parent_result.host_override()) {
+      char const *const hostname = s->parent_result.hostname;
+      if (!s->hdr_info.server_request.valid()) {
+        TxnDbg(dbg_ctl_http, "nextParent setting client_request header");
+        s->hdr_info.client_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
+      } else {
+        TxnDbg(dbg_ctl_http, "nextParent setting server_request header");
+        s->hdr_info.server_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
+        s->hdr_info.server_request.mark_target_dirty();
+      }
+    }
+  }
+
+  char const *const hostname = s->parent_result.hostname;
+  TxnDbg(dbg_ctl_http, "nextParent %s", hostname ? hostname : "''");
+
+  if (nullptr != hostname) {
+    s->parent_info.name = s->arena.str_store(hostname, strlen(hostname));
   }
 }
 

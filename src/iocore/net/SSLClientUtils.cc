@@ -83,8 +83,10 @@ verify_callback(int signature_ok, X509_STORE_CTX *ctx)
       char        buff[INET6_ADDRSTRLEN];
       ats_ip_ntop(netvc->get_remote_addr(), buff, INET6_ADDRSTRLEN);
       if (netvc->options.sni_servername) {
+        Dbg(dbg_ctl_ssl_verify, "from sni_servername");
         sni_name = netvc->options.sni_servername.get();
       } else {
+        Dbg(dbg_ctl_ssl_verify, "from netvc");
         sni_name = buff;
       }
       Warning("Core server certificate verification failed for (%s). Action=%s Error=%s server=%s(%s) depth=%d", sni_name,
