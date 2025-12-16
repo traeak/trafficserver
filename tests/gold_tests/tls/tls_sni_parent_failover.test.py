@@ -35,6 +35,15 @@ server_bar = Test.MakeOriginServer(
     ssl=True,
 )
 
+request_foo_header = {"headers": "GET / HTTP/1.1\r\n\r\n", "timestamp": "1469733493.993", "body": ""}
+response_foo_header = {"headers": "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n", "timestamp": "1469733493.993", "body": "foo ok"}
+
+request_bar_header = {"headers": "GET / HTTP/1.1\r\n\r\n", "timestamp": "1469733493.993", "body": ""}
+response_bar_header = {"headers": "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n", "timestamp": "1469733493.993", "body": "bar ok"}
+
+server_foo.addResponse("sessionlog.json", request_foo_header, response_foo_header)
+server_bar.addResponse("sessionlog.json", request_bar_header, response_bar_header)
+
 ts.addSSLfile("ssl/server_foo.pem")
 ts.addSSLfile("ssl/server_foo.key")
 ts.addSSLfile("ssl/server_bar.pem")
@@ -64,20 +73,26 @@ ts.Disk.records_config.update(
         'proxy.config.ssl.client.sni_policy': 'host'
     })
 
-request_foo_header = {"headers": "GET / HTTP/1.1\r\n\r\n", "timestamp": "1469733493.993", "body": ""}
-response_foo_header = {"headers": "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n", "timestamp": "1469733493.993", "body": "foo ok"}
+ts.Disk.remap_config.AddLine("map http:// https://example.com @plugin=header_rewrite.so @pparam=hdr_rw.config")
 
-request_bar_header = {"headers": "GET / HTTP/1.1\r\n\r\n", "timestamp": "1469733493.993", "body": ""}
-response_bar_header = {"headers": "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n", "timestamp": "1469733493.993", "body": "bar ok"}
+ts.Disk.parent_config.AddLine(
+    'dest_domain="." port=443 parent="foo.com:443|1" secondary_parent="bar.com:443|1" go_direct=false host_override=true')
 
-server_foo.addResponse("sessionlog.json", request_foo_header, response_header)
-server_bar.addResponse("sessionlog.json", request_bar_header, response_header)
+ts.Disk.MakeConfigFile("hdr_rw.config").AddLines(
+    [
+        'cond %{READ_RESPONSE_HDR_HOOK}',
+        'cond %{HEADER:@FirstTime} =""',
+        'set-header @FirstTime false',
+        'set-status 404',
+    ])
 
-self.ts_child.Disk.parent_config.AddLine()
+curl_args = f"-s -o /dev/stdout -D /dev/stderr -v -x localhost:{ts.Variables.port}/"
 
 tr = Test.AddTestRun("request with failover")
+
 ps = tr.Processes.Default
 ps.Default.StartBefore(server_foo)
 ps.Default.StartBefore(server_bar)
 ps.Default.StartBefore(Test.Processes.ts)
+tr.MakeCurlCommand(curl_args + " http://nhp_hr/path", ts=ts)
 tr.StillRunningAfter = ts
