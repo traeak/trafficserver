@@ -83,10 +83,8 @@ verify_callback(int signature_ok, X509_STORE_CTX *ctx)
       char        buff[INET6_ADDRSTRLEN];
       ats_ip_ntop(netvc->get_remote_addr(), buff, INET6_ADDRSTRLEN);
       if (netvc->options.sni_servername) {
-        Dbg(dbg_ctl_ssl_verify, "from sni_servername");
         sni_name = netvc->options.sni_servername.get();
       } else {
-        Dbg(dbg_ctl_ssl_verify, "from netvc");
         sni_name = buff;
       }
       Warning("Core server certificate verification failed for (%s). Action=%s Error=%s server=%s(%s) depth=%d", sni_name,
@@ -114,6 +112,7 @@ verify_callback(int signature_ok, X509_STORE_CTX *ctx)
       sni_name = reinterpret_cast<unsigned char *>(buff);
       ats_ip_ntop(netvc->get_remote_addr(), buff, INET6_ADDRSTRLEN);
     }
+    Dbg(dbg_ctl_ssl_verify, "sni_name: '%s'", sni_name);
     if (validate_hostname(cert, sni_name, false, &matched_name)) {
       Dbg(dbg_ctl_ssl_verify, "Hostname %s verified OK, matched %s", sni_name, matched_name);
       ats_free(matched_name);
@@ -122,6 +121,7 @@ verify_callback(int signature_ok, X509_STORE_CTX *ctx)
       if (netvc->options.sni_servername) {
         ats_ip_ntop(netvc->get_remote_addr(), buff, INET6_ADDRSTRLEN);
       }
+      Dbg(dbg_ctl_ssl_verify, "matched_name: '%s'", matched_name);
       // If we got here the verification failed
       Warning("SNI (%s) not in certificate. Action=%s server=%s(%s)", sni_name, enforce_mode ? "Terminate" : "Continue",
               netvc->options.ssl_servername.get(), buff);
