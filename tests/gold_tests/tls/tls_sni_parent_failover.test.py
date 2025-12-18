@@ -72,8 +72,7 @@ dns = Test.MakeDNServer("dns")
 ts.Disk.records_config.update(
     {
         'proxy.config.diags.debug.enabled': 1,
-        'proxy.config.diags.debug.tags': 'http|next_hop|parent|ssl|header_rewrite',
-        # set global policy
+        'proxy.config.diags.debug.tags': 'http|ssl',
         'proxy.config.ssl.client.verify.server.policy': 'ENFORCED',
         #'proxy.config.ssl.client.verify.server.policy': 'PERMISSIVE',
         'proxy.config.ssl.client.verify.server.properties': 'NAME',
@@ -87,31 +86,75 @@ ts.Disk.records_config.update(
 
 dns.addRecords(records={"foo.com.": ["127.0.0.1"]})
 dns.addRecords(records={"bar.com.": ["127.0.0.1"]})
-dns.addRecords(records={"foobar.": ["127.0.0.1"]})
+dns.addRecords(records={"parent.": ["127.0.0.1"]})
+dns.addRecords(records={"strategy.": ["127.0.0.1"]})
 
-ts.Disk.remap_config.AddLines(
-    [
-        "map http://foobar https://foobar",
-        #"@plugin=conf_remap.so @pparam=proxy.config.ssl.client.verify.server.properties=NAME",
-    ])
+ts.Disk.remap_config.AddLines([
+    "map http://parent https://parent",
+    "map http://strategy https://strategy @strategy=strat",
+])
 
 ts.Disk.parent_config.AddLine(
-    #'dest_domain=. port=443 parent="foo.com:{0}|1;bar.com:{1}|1" parent_retry=simple_retry parent_is_proxy=false go_direct=false simple_server_retry_responses="404" host_override=true'
-    'dest_domain=foobar port=443 parent="foo.com:{0}|1;bar.com:{1}|1" parent_retry=simple_retry parent_is_proxy=false go_direct=false simple_server_retry_responses="404" host_override=true'
+    'dest_domain=. port=443 parent="foo.com:{0}|1;bar.com:{1}|1" parent_retry=simple_retry parent_is_proxy=false go_direct=false simple_server_retry_responses="404" host_override=true'
     .format(server_foo.Variables.SSL_Port, server_bar.Variables.SSL_Port))
+
+# build strategies.yaml file
+ts.Disk.File(ts.Variables.CONFIGDIR + "/strategies.yaml", id="strategies", typename="ats:config")
+
+s = ts.Disk.strategies
+s.AddLine("groups:")
+s.AddLines(
+    [
+        f"  - &gstrat",
+        f"    - host: foo.com",
+        f"      protocol:",
+        f"      - scheme: https",
+        f"        port: {server_foo.Variables.SSL_Port}",
+        f"      weight: 1.0",
+        f"    - host: bar.com",
+        f"      protocol:",
+        f"      - scheme: https",
+        f"        port: {server_bar.Variables.SSL_Port}",
+        f"      weight: 1.0",
+    ])
+
+s.AddLine("strategies:")
+
+s.AddLines(
+    [
+        f"  - strategy: strat",
+        f"    policy: first_live",
+        f"    go_direct: false",
+        f"    parent_is_proxy: false",
+        f"    ignore_self_detect: true",
+        f"    host_override: true",
+        f"    groups:",
+        f"      - *gstrat",
+        f"    scheme: https",
+        f"    failover:",
+        f"      ring_mode: exhaust_ring",
+        f"      response_codes:",
+        f"        - 404",
+    ])
 
 curl_args = f"-s -L -o /dev/stdout -D /dev/stderr -x localhost:{ts.Variables.port}/"
 
-tr = Test.AddTestRun("request with failover")
+tr = Test.AddTestRun("request with failover, parent.config")
 tr.Setup.Copy("ssl/server-foo.key")
 tr.Setup.Copy("ssl/server-foo.pem")
 tr.Setup.Copy("ssl/server-bar.key")
 tr.Setup.Copy("ssl/server-bar.pem")
+tr.MakeCurlCommand(curl_args + " http://parent/path", ts=ts)
+tr.StillRunningAfter = ts
 ps = tr.Processes.Default
 ps.StartBefore(server_foo)
 ps.StartBefore(server_bar)
 ps.StartBefore(dns)
 ps.StartBefore(Test.Processes.ts)
-tr.MakeCurlCommand(curl_args + " http://foobar/path", ts=ts)
+ps.Streams.stdout = Testers.ContainsExpression("path bar ok", "Expected 200 response from bar.com")
+
+tr = Test.AddTestRun("request with failover, parent.config")
+tr.MakeCurlCommand(curl_args + " http://strategy/path", ts=ts)
 tr.StillRunningAfter = ts
+ps = tr.Processes.Default
 ps.Streams.stdout = Testers.ContainsExpression("path bar ok", "Expected 200 response from bar.com")
