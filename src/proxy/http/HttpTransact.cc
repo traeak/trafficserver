@@ -228,21 +228,16 @@ findParent(HttpTransact::State *s)
     if (s->parent_result.host_override()) {
       char const *const hostname = s->parent_result.hostname;
       if (!s->hdr_info.server_request.valid()) {
-        TxnDbg(dbg_ctl_http, "findParent setting server_request header");
         s->hdr_info.client_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
       } else {
-        TxnDbg(dbg_ctl_http, "findParent setting client_request header");
         s->hdr_info.server_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
         s->hdr_info.server_request.mark_target_dirty();
       }
+
+      if (nullptr != hostname) {
+        s->parent_info.name = s->arena.str_store(hostname, strlen(hostname));
+      }
     }
-  }
-
-  char const *const hostname = s->parent_result.hostname;
-  TxnDbg(dbg_ctl_http, "findParent %s", hostname ? hostname : "''");
-
-  if (nullptr != hostname) {
-    s->parent_info.name = s->arena.str_store(hostname, strlen(hostname));
   }
 }
 
@@ -337,21 +332,16 @@ nextParent(HttpTransact::State *s)
     if (s->parent_result.host_override()) {
       char const *const hostname = s->parent_result.hostname;
       if (!s->hdr_info.server_request.valid()) {
-        TxnDbg(dbg_ctl_http, "nextParent setting client_request header");
         s->hdr_info.client_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
       } else {
-        TxnDbg(dbg_ctl_http, "nextParent setting server_request header");
         s->hdr_info.server_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
         s->hdr_info.server_request.mark_target_dirty();
       }
+
+      if (nullptr != hostname) {
+        s->parent_info.name = s->arena.str_store(hostname, strlen(hostname));
+      }
     }
-  }
-
-  char const *const hostname = s->parent_result.hostname;
-  TxnDbg(dbg_ctl_http, "nextParent %s", hostname ? hostname : "''");
-
-  if (nullptr != hostname) {
-    s->parent_info.name = s->arena.str_store(hostname, strlen(hostname));
   }
 }
 

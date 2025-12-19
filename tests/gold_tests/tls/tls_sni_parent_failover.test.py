@@ -24,7 +24,12 @@ Test parent failover sni name
 #Test.ATSReplayTest(replay_file="replay/tls_sni_parent_failover.replay.yaml")
 
 # Define default ATS
-ts = Test.MakeATSProcess("ts", enable_tls=True)
+ts = Test.MakeATSProcess(
+    "ts",
+    enable_tls=True,
+    enable_cache=False,
+    command="valgrind.sh",
+)
 
 server_foo = Test.MakeOriginServer(
     "server_foo",
@@ -62,10 +67,14 @@ response_bar_header = {
 
 server_bar.addResponse("sessionlog.json", request_bar_header, response_bar_header)
 
+ts.Setup.CopyAs("valgrind.sh", ts.Variables.RUNTIMEDIR + "/../bin/")
+
 ts.addSSLfile("ssl/server-foo.pem")
 ts.addSSLfile("ssl/server-foo.key")
 ts.addSSLfile("ssl/server-bar.pem")
 ts.addSSLfile("ssl/server-bar.key")
+
+#ts.addFile("valgrind.sh")
 
 dns = Test.MakeDNServer("dns")
 

@@ -5211,8 +5211,6 @@ HttpSM::get_outbound_cert() const
 std::string_view
 HttpSM::get_outbound_sni() const
 {
-  SMDbg(dbg_ctl_http, "get_outbound_sni");
-
   using namespace swoc::literals;
   swoc::TextView zret;
   swoc::TextView policy{t_state.txn_conf->ssl_client_sni_policy, swoc::TextView::npos};
@@ -5237,22 +5235,6 @@ HttpSM::get_outbound_sni() const
     } else {
       zret.assign(server_name, swoc::TextView::npos);
     }
-    /*
-} else if (policy == "parent"_tv) {
-char const *pname = nullptr;
-
-if (t_state.response_action.handled) {
-  pname = t_state.response_action.action.hostname;
-} else if (nullptr != t_state.next_hop_strategy) {
-  pname = t_state.parent_result.hostname;
-} else if (nullptr != t_state.parent_params) {
-  pname = t_state.parent_result.hostname;
-}
-
-if (nullptr != pname) {
-  zret.assign(pname, swoc::TextView::npos);
-}
-    */
   } else if (policy.front() == '@') { // guaranteed non-empty from previous clause
     zret = policy.remove_prefix(1);
   } else {
@@ -5745,7 +5727,6 @@ HttpSM::do_http_server_open(bool raw, bool only_direct)
 
     std::string_view sni_name = this->get_outbound_sni();
     if (sni_name.length() > 0) {
-      SMDbg(dbg_ctl_http, "set_sni_servername: %.*s", (int)sni_name.length(), sni_name.data());
       opt.set_sni_servername(sni_name.data(), sni_name.length());
     }
     if (t_state.txn_conf->ssl_client_sni_policy != nullptr &&
@@ -5753,12 +5734,10 @@ HttpSM::do_http_server_open(bool raw, bool only_direct)
       // also set sni_hostname with host header from server request in this policy
       auto host{t_state.hdr_info.server_request.host_get()};
       if (!host.empty()) {
-        SMDbg(dbg_ctl_http, "set_sni_hostname: %.*s", (int)host.length(), host.data());
         opt.set_sni_hostname(host.data(), static_cast<int>(host.length()));
       }
     }
     if (t_state.server_info.name) {
-      SMDbg(dbg_ctl_http, "set_ssl_servername: %s", t_state.server_info.name);
       opt.set_ssl_servername(t_state.server_info.name);
     }
 

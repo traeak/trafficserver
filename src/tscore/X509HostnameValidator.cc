@@ -252,9 +252,6 @@ validate_hostname(X509 *x, const unsigned char *hostname, bool is_ip, char **pee
         continue;
       }
 
-      // BNO
-      fprintf(stderr, "BNO: checking san name: %.*s\n", cstr->length, cstr->data);
-
       if ((retval = do_check_string(cstr, alt_type, equal, hostname, hostname_len, peername)) == true) {
         // We got a match
         break;
@@ -280,7 +277,6 @@ validate_hostname(X509 *x, const unsigned char *hostname, bool is_ip, char **pee
     if (astrlen < 0) {
       return -1;
     }
-    fprintf(stderr, "BNO: checking subject name: %.*s\n", astrlen, astr);
     retval = equal(astr, astrlen, hostname, hostname_len);
     if (retval && peername) {
       *peername = ats_strndup((char *)astr, astrlen);
