@@ -144,14 +144,15 @@ bypass_ok(HttpTransact::State *s)
 inline static bool
 host_override(HttpTransact::State *s)
 {
-  bool res = false;
-  if (nullptr != s->next_hop_strategy) {
+  if (s->response_action.handled) { // should be handled by the plugin
+    return false;
+  } else if (nullptr != s->next_hop_strategy) {
     // remap strategies do not support the TSHttpTxnParentProxySet API.
-    res = s->next_hop_strategy->host_override;
+    return s->next_hop_strategy->host_override;
   } else if (nullptr != s->parent_params) {
-    res = s->parent_result.host_override();
+    return s->parent_result.host_override();
   }
-  return res;
+  return false;
 }
 
 // wrapper to choose between a remap next hop strategy or use parent.config
@@ -159,14 +160,15 @@ host_override(HttpTransact::State *s)
 inline static bool
 is_some(HttpTransact::State *s)
 {
-  bool res = false;
-  if (nullptr != s->next_hop_strategy) {
+  if (s->response_action.handled) {
+    return true;
+  } else if (nullptr != s->next_hop_strategy) {
     // remap strategies do not support the TSHttpTxnParentProxySet API.
-    res = s->parent_result.result == ParentResultType::SPECIFIED;
+    return s->parent_result.result == ParentResultType::SPECIFIED;
   } else if (nullptr != s->parent_params) {
-    res = s->parent_result.is_some();
+    return s->parent_result.is_some();
   }
-  return res;
+  return false;
 }
 
 // wrapper to choose between a remap next hop strategy or use parent.config
@@ -628,14 +630,11 @@ find_server_and_update_current_info(HttpTransact::State *s)
     TxnDbg(dbg_ctl_http_trans, "request is from localhost, so bypass parent");
     s->parent_result.result = ParentResultType::DIRECT;
   } else if (s->method == HTTP_WKSIDX_CONNECT && s->http_config_param->disable_ssl_parenting) {
-    /// BNO
-
     if (s->parent_result.result == ParentResultType::SPECIFIED) {
       nextParent(s);
     } else {
       findParent(s);
     }
-
     if (!is_some(s) || is_api_result(s) || parent_is_proxy(s)) {
       TxnDbg(dbg_ctl_http_trans, "request not cacheable, so bypass parent");
       s->parent_result.result = ParentResultType::DIRECT;
@@ -702,17 +701,20 @@ find_server_and_update_current_info(HttpTransact::State *s)
   switch (s->parent_result.result) {
   case ParentResultType::SPECIFIED: {
     char const *const hostname = s->parent_result.hostname;
-    s->parent_info.name        = s->arena.str_store(hostname, strlen(hostname));
 
-    // if host header override option enabled
-    if (host_override(s)) {
-      TxnDbg(dbg_ctl_http_trans, "overriding host header with parent %s", hostname);
-      if (!s->hdr_info.server_request.valid()) {
-        s->hdr_info.client_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
-        s->hdr_info.client_request.mark_target_dirty();
-      } else {
-        s->hdr_info.server_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
-        s->hdr_info.server_request.mark_target_dirty();
+    if (nullptr != hostname) {
+      s->parent_info.name = s->arena.str_store(hostname, strlen(hostname));
+
+      // if host header override option enabled
+      if (host_override(s)) {
+        TxnDbg(dbg_ctl_http_trans, "overriding host header with parent %s", hostname);
+        if (!s->hdr_info.server_request.valid()) {
+          s->hdr_info.client_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
+          s->hdr_info.client_request.mark_target_dirty();
+        } else {
+          s->hdr_info.server_request.value_set(static_cast<std::string_view>(MIME_FIELD_HOST), hostname);
+          s->hdr_info.server_request.mark_target_dirty();
+        }
       }
     }
 
