@@ -318,6 +318,8 @@ public:
   int marshal_milestone_diff(TSMilestonesType ms1, TSMilestonesType ms2, char *buf);
 
   bool has_http_header_field(LogField::Container container, const char *field) const;
+  int  marshal_milestones_csv(char *buf);
+
   void set_http_header_field(LogField::Container container, char *field, char *buf, int len);
   //
   // unmarshalling routines
