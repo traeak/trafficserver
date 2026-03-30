@@ -45,15 +45,20 @@ const char PLUGIN_NAME_DBG[] = "dbg_header_rewrite";
 DbgCtl dbg_ctl{PLUGIN_NAME_DBG};
 DbgCtl pi_dbg_ctl{PLUGIN_NAME};
 
-std::once_flag initHRWLibs;
+std::once_flag initGeoLibs;
+std::once_flag initPlugin;
 PluginFactory  plugin_factory;
 } // namespace header_rewrite_ns
 
 static void
-initHRWLibraries(const std::string &dbPath)
+initPluginFactory()
 {
   header_rewrite_ns::plugin_factory.setRuntimeDir(RecConfigReadRuntimeDir()).addSearchDir(RecConfigReadPluginDir());
+}
 
+static void
+initGeoLibraries(const std::string &dbPath)
+{
   if (dbPath.empty()) {
     return;
   }
@@ -421,7 +426,8 @@ TSPluginInit(int argc, const char *argv[])
 
   Dbg(pi_dbg_ctl, "Global geo db %s", geoDBpath.c_str());
 
-  std::call_once(initHRWLibs, [&geoDBpath]() { initHRWLibraries(geoDBpath); });
+  std::call_once(initGeoLibs, [&geoDBpath]() { initGeoLibraries(geoDBpath); });
+  std::call_once(initPlugin, initPluginFactory);
 
   // Parse the global config file(s). All rules are just appended
   // to the "global" Rules configuration.
@@ -502,13 +508,18 @@ TSRemapNewInstance(int argc, char *argv[], void **ih, char * /* errbuf ATS_UNUSE
   }
 
   if (!geoDBpath.empty()) {
-    if (geoDBpath.find('/') != 0) {
+    if (!geoDBpath.starts_with('/')) {
       geoDBpath = std::string(TSConfigDirGet()) + '/' + geoDBpath;
     }
-
     Dbg(pi_dbg_ctl, "Remap geo db %s", geoDBpath.c_str());
-    std::call_once(initHRWLibs, [&geoDBpath]() { initHRWLibraries(geoDBpath); });
+
+    // This MUST be called only if the geoDBpath is set.  If called without a geoDBPath (i.e. outside of this if) then
+    // NO hrw remap rule can load a mmdb file.
+    // The call_once applies to every remap instance as its a plugin global
+    std::call_once(initGeoLibs, [&geoDBpath]() { initGeoLibraries(geoDBpath); });
   }
+
+  std::call_once(initPlugin, initPluginFactory);
 
   RulesConfig *conf = new RulesConfig;
 
