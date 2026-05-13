@@ -1290,7 +1290,7 @@ OperatorRunPlugin::initialize(Parser &p)
   argv[0] = p.from_url();
   argv[1] = p.to_url();
 
-  for (int i = 0; i < argc; ++i) {
+  for (int i = 0; i < (int)tokens.size(); ++i) {
     argv[i + 2] = const_cast<char *>(tokens[i].c_str());
   }
 
