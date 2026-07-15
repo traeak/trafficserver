@@ -1,0 +1,48 @@
+Changes with Apache Traffic Server 10.1.3
+  #12192 - Return a 400 on chunk parse errors
+  #12733 - Fix retry logic for TSHttpTxnServerAddrSet (issue #12611)
+  #12854 - Fix LoadedPlugins::remove crash during static destruction
+  #12855 - Fix header_rewrite run-plugin relative path resolution
+  #12857 - Fix autest compatibility with Fedora 43 / Python 3.14
+  #12943 - Address incompatibility with BoringSSL
+  #12959 - Fix crash in HttpSM::tunnel_handler on unhandled VC events
+  #12972 - Fix cache retry assert on ServerAddrSet
+  #12990 - Update to Proxy Verifier v3.0.0
+  #13008 - cmake: limit GENERAL_NAME bssl probe
+  #13020 - Align AuTests with latest proxy-verifier checks (#12986)
+  #13025 - hrw: Refix loading geodb files
+  #13033 - tests/gold_tests/headers tests: use ATSReplayTest
+  #13113 - slice: Fix crash caused by use-after-free
+  #13114 - Fix bg fill teardown crash in update_size_and_time_stats
+  #13138 - Remove cache alternate vector detach
+  #13144 - Fix XPACK relative index underflow
+  #13162 - hrw: Fix an index bug in run plugin operator
+  #13177 - Correct records.yaml record drift
+  #13178 - 10.1.x: proxy.config.dns.search_default_domains: allow 2
+  #13182 - Stabilize parallel AuTest helpers
+  #13192 - yaml-cpp-0.9.0
+  #13193 - GCC 16: Regex header integer includes
+  #13198 - Fedora 44 test fixes
+  #13200 - Single source of truth for Proxy Verifier metadata
+  #13217 - Proxy Verifier v3.1.3
+  #13218 - Fix hdrHeap/hdrStrHeap allocator inuse metric underflow
+  #13220 - Fix flaky Fedora 44 AuTest helpers
+  #13223 - Fix mismatched sINT/dINT log field types
+  #13252 - cache: apply per-volume settings on first start after clear
+  #13256 - Fix mismatched log field types more
+  #13261 - header_rewrite: Improve URL Error messages
+  #13263 - Fix bounds check in CacheVC::scanObject
+  #13264 - Handle OpenSSL without dynamic ENGINE
+  #13280 - Enable probes in Fedora C++20 CI
+  #13293 - ProxyProtocol: free pp_info heap on NetVConnection recycle
+  #13294 - Fix pending HostDB DNS queue removal race
+  #13295 - Fix server entry cleanup after request tunnel setup
+  #13297 - 10.1.x: Add sni.yaml session ticket overrides (#13006)
+  #13303 - header_rewrite: Fix a leak and truncation in set-body-from
+  #13307 - dns: destruct HostEnt on free to fix SRV vector leak
+  #13318 - TLS: Fix memory leaks in cert load and OCSP stapling
+  #13325 - HttpSM.cc: fix cache read end milestone order
+  #13336 - 10.1.x: Fix redirected cache write without write VC
+  #13365 - 10.1.x: USDT: normalize names for STATE_ENTER
+  #13366 - 10.1.x: Fix set-status crash inside if/endif at remap time
+  #13387 - Hard-enforce max_active_streams_in at HTTP/2 stream creation
