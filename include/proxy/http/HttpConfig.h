@@ -346,6 +346,17 @@ enum CacheOpenWriteFailAction_t {
   TOTAL_CACHE_WL_FAIL_ACTION_TYPES
 };
 
+/** Whether a cache_open_write_fail_action retries the cache read.
+ *
+ * @param[in] action A proxy.config.http.cache.open_write_fail_action value.
+ * @return Whether losing the cache write lock should retry the cache read.
+ */
+inline bool
+is_read_retry_write_fail_action(MgmtByte action)
+{
+  return action == static_cast<MgmtByte>(CACHE_WL_FAIL_ACTION_READ_RETRY);
+}
+
 extern HttpStatsBlock http_rsb;
 
 /////////////////////////////////////////////////////////////

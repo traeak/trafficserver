@@ -35,8 +35,6 @@
 #include <optional>
 #include <memory>
 
-#include "tscore/ink_platform.h"
-#include "iocore/eventsystem/EventSystem.h"
 #include "proxy/http/HttpCacheSM.h"
 #include "proxy/http/HttpTransact.h"
 #include "proxy/http/HttpUserAgent.h"
@@ -45,7 +43,6 @@
 #include "proxy/http/HttpTunnel.h"
 #include "api/InkAPIInternal.h"
 #include "proxy/ProxyTransaction.h"
-#include "proxy/hdrs/HdrUtils.h"
 
 // inknet
 #include "proxy/http/PreWarmManager.h"
@@ -343,6 +340,40 @@ public:
   void           set_http_schedule(Continuation *);
   int            get_http_schedule(int event, void *data);
 
+  static CacheHTTPInfo *
+  cache_write_info_for_lookup(CompatibilityCacheLookup lookup, CacheHTTPInfo *object_read_info)
+  {
+    if (lookup == CompatibilityCacheLookup::COMPAT_CACHE_LOOKUP_92) {
+      return nullptr;
+    }
+    return object_read_info;
+  }
+
+  static bool
+  should_use_compatibility_cache_key(CompatibilityCacheLookup lookup)
+  {
+    return lookup == CompatibilityCacheLookup::COMPAT_CACHE_LOOKUP_92;
+  }
+
+  static bool
+  should_invalidate_compatibility_cache(CompatibilityCacheLookup lookup, const HTTPHdr &server_response)
+  {
+    return should_use_compatibility_cache_key(lookup) && server_response.valid() &&
+           server_response.status_get() == HTTP_STATUS_NOT_MODIFIED;
+  }
+
+  bool
+  should_invalidate_compatibility_cache() const
+  {
+    return should_invalidate_compatibility_cache(compatibility_cache_lookup, t_state.hdr_info.server_response);
+  }
+
+  MgmtByte
+  get_cache_open_write_fail_action() const
+  {
+    return t_state.txn_conf->cache_open_write_fail_action;
+  }
+
 private:
   void start_sub_sm();
 
@@ -548,6 +579,8 @@ public:
   CompatibilityCacheLookup compatibility_cache_lookup = CompatibilityCacheLookup::COMPAT_CACHE_LOOKUP_NORMAL;
 
 private:
+  bool compatibility_cache_invalidate_after_read = false;
+
   HttpTunnel tunnel;
 
   HttpVCTable vc_table;

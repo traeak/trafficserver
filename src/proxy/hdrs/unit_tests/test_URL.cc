@@ -856,3 +856,23 @@ TEST_CASE("UrlPathGet", "[url][path_get]")
     }
   }
 }
+
+TEST_CASE("UrlHashGet92 preserves legacy params", "[url][hash_get92]")
+{
+  URL url;
+  HdrHeap *heap = new_HdrHeap();
+  url.create(heap);
+  REQUIRE(url.parse("http://foo.test/path") == PARSE_RESULT_DONE);
+
+  static constexpr char legacy_params[] = "p=1";
+  url.m_url_impl->m_ptr_params = legacy_params;
+  url.m_url_impl->m_len_params = sizeof(legacy_params) - 1;
+
+  CryptoHash current_hash;
+  CryptoHash legacy_hash;
+  url.hash_get(&current_hash);
+  url.hash_get92(&legacy_hash);
+  CHECK(current_hash != legacy_hash);
+
+  heap->destroy();
+}
