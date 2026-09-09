@@ -1,0 +1,195 @@
+#  Licensed to the Apache Software Foundation (ASF) under one
+#  or more contributor license agreements.  See the NOTICE file
+#  distributed with this work for additional information
+#  regarding copyright ownership.  The ASF licenses this file
+#  to you under the Apache License, Version 2.0 (the
+#  "License"); you may not use this file except in compliance
+#  with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
+meta:
+  version: "1.0"
+
+autest:
+  description: 'Verify the remap waf plugin acts on the ModSecurity interventions'
+
+  dns:
+    name: 'dns'
+
+  server:
+    name: 'server'
+
+  client:
+    name: 'client'
+
+  ats:
+    name: 'ts'
+
+    process_config:
+      enable_cache: false
+
+    records_config:
+      proxy.config.diags.debug.enabled: 1
+      proxy.config.diags.debug.tags: waf
+
+    copy_to_config_dir:
+      - waf_rules.conf
+
+    log_validation:
+      diags_log:
+        contains:
+          - expression: 'dropping an intervention redirect containing control characters'
+            description: 'The plugin must refuse a redirect target carrying a CRLF'
+
+    remap_config:
+      - from: "http://example.com/"
+        to: "http://backend.example.com:{SERVER_HTTP_PORT}/"
+        plugins:
+          - name: 'waf.so'
+            args:
+              - 'waf_rules.conf'
+
+sessions:
+- transactions:
+
+  # A request the rules have nothing to say about is proxied as usual.
+  - client-request:
+      method: GET
+      url: /allowed?testparam=harmless
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, example.com]
+        - [uuid, waf-remap-allowed]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Content-Length, "0"]
+
+    proxy-response:
+      status: 200
+
+  # Rule 1234 denies this request with a 403 before it reaches the origin.
+  - client-request:
+      method: GET
+      url: /blocked?testparam=test2
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, example.com]
+        - [uuid, waf-remap-request-deny]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Content-Length, "0"]
+
+    proxy-response:
+      status: 403
+
+  # Rule 1235 redirects this request with a 301 before it reaches the origin.
+  - client-request:
+      method: GET
+      url: /redirected?testparam=test1
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, example.com]
+        - [uuid, waf-remap-request-redirect]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Content-Length, "0"]
+
+    proxy-response:
+      status: 301
+      headers:
+        fields:
+        - [Location, "https://www.example.com/", equal]
+
+  # Rule 1236 replaces an origin response carrying "test: 1" with a 403.
+  - client-request:
+      method: GET
+      url: /response-deny
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, example.com]
+        - [uuid, waf-remap-response-deny]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [test, "1"]
+        - [Content-Length, "0"]
+
+    proxy-response:
+      status: 403
+
+  # Rule 1237 turns an origin response carrying "test: 2" into a 301.
+  - client-request:
+      method: GET
+      url: /response-redirect
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, example.com]
+        - [uuid, waf-remap-response-redirect]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [test, "2"]
+        - [Content-Length, "0"]
+
+    proxy-response:
+      status: 301
+      headers:
+        fields:
+        - [Location, "https://www.example.com/", equal]
+
+  # A rule whose redirect target embeds decoded request data. The request smuggles
+  # a CRLF through %0d%0a; the plugin must drop the redirect rather than let it
+  # split the response. The invariant asserted here holds whether or not the
+  # installed libmodsecurity decodes the macro: no attacker header is ever
+  # injected into the response.
+  - client-request:
+      method: GET
+      url: /redirect-macro?testparam=test3&u=%0d%0aSet-Cookie:%20injected=1
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, example.com]
+        - [uuid, waf-remap-redirect-macro]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Content-Length, "0"]
+
+    proxy-response:
+      status: 302
+      headers:
+        fields:
+        - [Set-Cookie, {as: absent}]

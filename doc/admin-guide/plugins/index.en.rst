@@ -196,6 +196,7 @@ directory of the |TS| source tree. Experimental plugins can be compiled by passi
    Stale Response <stale_response.en>
    STEK Share <stek_share.en>
    System Statistics <system_stats.en>
+   WAF <waf.en>
    Wasm <wasm.en>
    Prefetch <prefetch.en>
    Transaction Box(TxnBox) <txn_box/index.en>
@@ -302,6 +303,9 @@ directory of the |TS| source tree. Experimental plugins can be compiled by passi
 
 :doc:`System Stats <system_stats.en>`
     Inserts system statistics in to the stats list
+
+:doc:`WAF <waf.en>`
+   A web application firewall backed by ModSecurity v3.
 
 :doc:`Wasm <wasm.en>`
    Allows WebAssembly/Wasm (proxy-wasm) module to be used as ATS Plugin.

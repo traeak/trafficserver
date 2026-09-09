@@ -110,6 +110,15 @@ auto_option(
 )
 auto_option(URL_SIG FEATURE_VAR BUILD_URL_SIG DEFAULT ${_DEFAULT})
 auto_option(
+  WAF
+  FEATURE_VAR
+  BUILD_WAF
+  PACKAGE_DEPENDS
+  modsecurity
+  DEFAULT
+  ${_DEFAULT}
+)
+auto_option(
   WASM_WAMR
   FEATURE_VAR
   BUILD_WASM_WAMR
