@@ -1,3 +1,4 @@
+'''Verify the modsecurity plugin acts on the ModSecurity interventions as a global plugin.'''
 #  Licensed to the Apache Software Foundation (ASF) under one
 #  or more contributor license agreements.  See the NOTICE file
 #  distributed with this work for additional information
@@ -14,16 +15,8 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+Test.Summary = __doc__
 
-# Example ModSecurity configuration file for the waf plugin. See README.md.
+Test.SkipUnless(Condition.PluginExists('modsecurity.so'))
 
-SecRuleEngine On
-
-# Uncomment to write ModSecurity's own debug log.
-#SecDebugLog /tmp/debug.log
-#SecDebugLogLevel 9
-
-SecRule ARGS:testparam "@contains test2" "id:1234,deny,status:403"
-SecRule ARGS:testparam "@contains test1" "id:1235,status:301,redirect:https://www.example.com/"
-SecRule RESPONSE_HEADERS:test "@contains 1" "id:1236,phase:3,deny,status:403"
-SecRule RESPONSE_HEADERS:test "@contains 2" "id:1237,phase:3,status:301,redirect:https://www.example.com/"
+Test.ATSReplayTest(replay_file="replay/modsecurity.replay.yaml")

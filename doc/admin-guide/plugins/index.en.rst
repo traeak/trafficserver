@@ -183,6 +183,7 @@ directory of the |TS| source tree. Experimental plugins can be compiled by passi
    Maxmind ACL <maxmind_acl.en>
    Memcache <memcache.en>
    Memory Profile <memory_profile.en>
+   ModSecurity <modsecurity.en>
    Money Trace <money_trace.en>
    MP4 <mp4.en>
    Multiplexer <multiplexer.en>
@@ -196,7 +197,6 @@ directory of the |TS| source tree. Experimental plugins can be compiled by passi
    Stale Response <stale_response.en>
    STEK Share <stek_share.en>
    System Statistics <system_stats.en>
-   WAF <waf.en>
    Wasm <wasm.en>
    Prefetch <prefetch.en>
    Transaction Box(TxnBox) <txn_box/index.en>
@@ -246,6 +246,9 @@ directory of the |TS| source tree. Experimental plugins can be compiled by passi
 
 :doc:`Memcache <memcache.en>`
    Implements the memcache protocol for cache contents.
+
+:doc:`ModSecurity <modsecurity.en>`
+   A web application firewall backed by ModSecurity v3.
 
 :doc:`Money Trace <money_trace.en>`
    Allows Trafficserver to participate in a distributed tracing system based upon the Comcast Money library.
@@ -303,9 +306,6 @@ directory of the |TS| source tree. Experimental plugins can be compiled by passi
 
 :doc:`System Stats <system_stats.en>`
     Inserts system statistics in to the stats list
-
-:doc:`WAF <waf.en>`
-   A web application firewall backed by ModSecurity v3.
 
 :doc:`Wasm <wasm.en>`
    Allows WebAssembly/Wasm (proxy-wasm) module to be used as ATS Plugin.

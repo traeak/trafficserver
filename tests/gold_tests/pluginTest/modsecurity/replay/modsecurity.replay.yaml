@@ -18,7 +18,7 @@ meta:
   version: "1.0"
 
 autest:
-  description: 'Verify the global waf plugin acts on the ModSecurity interventions'
+  description: 'Verify the global modsecurity plugin acts on the ModSecurity interventions'
 
   dns:
     name: 'dns'
@@ -37,15 +37,15 @@ autest:
 
     records_config:
       proxy.config.diags.debug.enabled: 1
-      proxy.config.diags.debug.tags: waf
+      proxy.config.diags.debug.tags: modsecurity
 
     copy_to_config_dir:
-      - waf_rules.conf
+      - modsecurity_rules.conf
 
     plugin_config:
-      - name: 'waf.so'
+      - name: 'modsecurity.so'
         args:
-          - 'waf_rules.conf'
+          - 'modsecurity_rules.conf'
 
     log_validation:
       diags_log:
@@ -68,7 +68,7 @@ sessions:
       headers:
         fields:
         - [Host, example.com]
-        - [uuid, waf-allowed]
+        - [uuid, modsecurity-allowed]
 
     server-response:
       status: 200
@@ -88,7 +88,7 @@ sessions:
       headers:
         fields:
         - [Host, example.com]
-        - [uuid, waf-request-deny]
+        - [uuid, modsecurity-request-deny]
 
     server-response:
       status: 200
@@ -108,7 +108,7 @@ sessions:
       headers:
         fields:
         - [Host, example.com]
-        - [uuid, waf-request-redirect]
+        - [uuid, modsecurity-request-redirect]
 
     server-response:
       status: 200
@@ -131,7 +131,7 @@ sessions:
       headers:
         fields:
         - [Host, example.com]
-        - [uuid, waf-response-deny]
+        - [uuid, modsecurity-response-deny]
 
     server-response:
       status: 200
@@ -152,7 +152,7 @@ sessions:
       headers:
         fields:
         - [Host, example.com]
-        - [uuid, waf-response-redirect]
+        - [uuid, modsecurity-response-redirect]
 
     server-response:
       status: 200
@@ -180,7 +180,7 @@ sessions:
       headers:
         fields:
         - [Host, example.com]
-        - [uuid, waf-redirect-macro]
+        - [uuid, modsecurity-redirect-macro]
 
     server-response:
       status: 200

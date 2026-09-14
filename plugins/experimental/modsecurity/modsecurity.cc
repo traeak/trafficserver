@@ -23,11 +23,11 @@
 // It works both as a global plugin, taking the ModSecurity rule files as
 // arguments in plugin.config:
 //
-//   waf.so waf/example.conf
+//   modsecurity.so modsecurity/example.conf
 //
 // and as a remap plugin, taking them as pparams:
 //
-//   map http://example.com/ http://origin/ @plugin=waf.so @pparam=waf/example.conf
+//   map http://example.com/ http://origin/ @plugin=modsecurity.so @pparam=modsecurity/example.conf
 //
 //////////////////////////////////////////////////////////////////////////////
 
@@ -56,11 +56,11 @@
 
 namespace
 {
-constexpr char PLUGIN_NAME[]    = "waf";
+constexpr char PLUGIN_NAME[]    = "modsecurity";
 constexpr char PLUGIN_VENDOR[]  = "Apache Software Foundation";
 constexpr char PLUGIN_SUPPORT[] = "dev@trafficserver.apache.org";
 
-// Payload of "traffic_ctl plugin msg waf <cmd>" that reloads the rule files.
+// Payload of "traffic_ctl plugin msg modsecurity <cmd>" that reloads the rule files.
 constexpr std::string_view RELOAD_CMD = "reload";
 
 constexpr std::string_view ERROR_BODY  = "Blocked by ModSecurity\n";

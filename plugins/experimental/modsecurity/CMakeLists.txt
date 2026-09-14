@@ -15,8 +15,8 @@
 #
 #######################
 
-add_atsplugin(waf waf.cc)
+add_atsplugin(modsecurity modsecurity.cc)
 
-target_link_libraries(waf PRIVATE modsecurity::modsecurity)
-verify_global_plugin(waf)
-verify_remap_plugin(waf)
+target_link_libraries(modsecurity PRIVATE modsecurity::modsecurity)
+verify_global_plugin(modsecurity)
+verify_remap_plugin(modsecurity)

@@ -1,7 +1,7 @@
-.. _admin-plugins-waf:
+.. _admin-plugins-modsecurity:
 
-WAF Plugin
-**********
+ModSecurity Plugin
+******************
 
 .. Licensed to the Apache Software Foundation (ASF) under one
    or more contributor license agreements.  See the NOTICE file
@@ -41,7 +41,7 @@ built along with the other experimental plugins::
    cmake -B build -DBUILD_EXPERIMENTAL_PLUGINS=ON
    cmake --build build
 
-Passing ``-DENABLE_WAF=ON`` makes a missing ``libmodsecurity`` a configure
+Passing ``-DENABLE_MODSECURITY=ON`` makes a missing ``libmodsecurity`` a configure
 error instead of quietly skipping the plugin.
 
 Configuration
@@ -50,11 +50,11 @@ Configuration
 As a global plugin, add it to :file:`plugin.config` followed by one or more
 ModSecurity rule files. Files are loaded in the order given::
 
-   waf.so waf/example.conf
+   modsecurity.so modsecurity/example.conf
 
 As a remap plugin, the rule files are passed as ``pparam`` arguments::
 
-   map http://example.com/ http://origin/ @plugin=waf.so @pparam=waf/example.conf
+   map http://example.com/ http://origin/ @plugin=modsecurity.so @pparam=modsecurity/example.conf
 
 A relative path is resolved against the |TS| configuration directory.
 ``Include`` directives inside a rule file are resolved relative to the
@@ -69,7 +69,7 @@ Reloading rules
 The rules of the global instance are reloaded on demand with
 :program:`traffic_ctl`::
 
-   traffic_ctl plugin msg waf reload
+   traffic_ctl plugin msg modsecurity reload
 
 The rule files named in :file:`plugin.config` are re-read into a new rule set.
 If any of them fails to parse, the error is logged and the previously loaded
@@ -127,14 +127,14 @@ Logging
 =======
 
 Messages produced by rules with a ``log`` action are written to
-:file:`diags.log` at the ``NOTE`` level, tagged with ``waf``. ModSecurity's own
+:file:`diags.log` at the ``NOTE`` level, tagged with ``modsecurity``. ModSecurity's own
 debug and audit logs are configured in the rule file with ``SecDebugLog`` and
 ``SecAuditLog``.
 
-Debug output from the plugin is enabled with the ``waf`` debug tag::
+Debug output from the plugin is enabled with the ``modsecurity`` debug tag::
 
    proxy.config.diags.debug.enabled: 1
-   proxy.config.diags.debug.tags: waf
+   proxy.config.diags.debug.tags: modsecurity
 
 Limitations
 ===========

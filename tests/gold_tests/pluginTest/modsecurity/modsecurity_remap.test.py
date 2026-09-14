@@ -1,4 +1,4 @@
-'''Verify the waf plugin acts on the ModSecurity interventions as a remap plugin.'''
+'''Verify the modsecurity plugin acts on the ModSecurity interventions as a remap plugin.'''
 #  Licensed to the Apache Software Foundation (ASF) under one
 #  or more contributor license agreements.  See the NOTICE file
 #  distributed with this work for additional information
@@ -17,6 +17,6 @@
 
 Test.Summary = __doc__
 
-Test.SkipUnless(Condition.PluginExists('waf.so'))
+Test.SkipUnless(Condition.PluginExists('modsecurity.so'))
 
-Test.ATSReplayTest(replay_file="replay/waf_remap.replay.yaml")
+Test.ATSReplayTest(replay_file="replay/modsecurity_remap.replay.yaml")

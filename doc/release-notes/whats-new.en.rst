@@ -65,7 +65,7 @@ Plugins
   ja* fields.
 * ja4_fingerprint: Added this new plugin
 * rate_limit: Add a ``--rate`` option to limit by RPS
-* waf: Added this new plugin, a web application firewall backed by
+* modsecurity: Added this new plugin, a web application firewall backed by
   ModSecurity v3
 
 TS API

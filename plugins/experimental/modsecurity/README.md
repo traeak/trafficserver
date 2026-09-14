@@ -1,10 +1,10 @@
-# waf
+# modsecurity
 
 A web application firewall for Apache Traffic Server, backed by
 [ModSecurity v3](https://github.com/owasp-modsecurity/ModSecurity)
 (`libmodsecurity`). It works both as a global plugin and as a remap plugin.
 
-For the full documentation see `doc/admin-guide/plugins/waf.en.rst`.
+For the full documentation see `doc/admin-guide/plugins/modsecurity.en.rst`.
 
 ## Building
 
@@ -16,7 +16,7 @@ cmake -B build -DBUILD_EXPERIMENTAL_PLUGINS=ON
 cmake --build build
 ```
 
-Use `-DENABLE_WAF=ON` to make a missing `libmodsecurity` a configure error
+Use `-DENABLE_MODSECURITY=ON` to make a missing `libmodsecurity` a configure error
 rather than silently skipping the plugin.
 
 ## Configuring
@@ -25,13 +25,13 @@ As a global plugin, add it to `plugin.config` with one or more ModSecurity rule
 files:
 
 ```
-waf.so waf/example.conf
+modsecurity.so modsecurity/example.conf
 ```
 
 As a remap plugin, pass the rule files as pparams:
 
 ```
-map http://example.com/ http://origin/ @plugin=waf.so @pparam=waf/example.conf
+map http://example.com/ http://origin/ @plugin=modsecurity.so @pparam=modsecurity/example.conf
 ```
 
 A relative path is resolved against the Traffic Server configuration directory.
@@ -39,7 +39,7 @@ A relative path is resolved against the Traffic Server configuration directory.
 The global instance reloads its rule files with:
 
 ```
-traffic_ctl plugin msg waf reload
+traffic_ctl plugin msg modsecurity reload
 ```
 
 If a reload fails to parse, the previously loaded rules stay in effect. Remap

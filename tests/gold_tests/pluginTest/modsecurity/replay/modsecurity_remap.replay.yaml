@@ -18,7 +18,7 @@ meta:
   version: "1.0"
 
 autest:
-  description: 'Verify the remap waf plugin acts on the ModSecurity interventions'
+  description: 'Verify the remap modsecurity plugin acts on the ModSecurity interventions'
 
   dns:
     name: 'dns'
@@ -37,10 +37,10 @@ autest:
 
     records_config:
       proxy.config.diags.debug.enabled: 1
-      proxy.config.diags.debug.tags: waf
+      proxy.config.diags.debug.tags: modsecurity
 
     copy_to_config_dir:
-      - waf_rules.conf
+      - modsecurity_rules.conf
 
     log_validation:
       diags_log:
@@ -52,9 +52,9 @@ autest:
       - from: "http://example.com/"
         to: "http://backend.example.com:{SERVER_HTTP_PORT}/"
         plugins:
-          - name: 'waf.so'
+          - name: 'modsecurity.so'
             args:
-              - 'waf_rules.conf'
+              - 'modsecurity_rules.conf'
 
 sessions:
 - transactions:
@@ -67,7 +67,7 @@ sessions:
       headers:
         fields:
         - [Host, example.com]
-        - [uuid, waf-remap-allowed]
+        - [uuid, modsecurity-remap-allowed]
 
     server-response:
       status: 200
@@ -87,7 +87,7 @@ sessions:
       headers:
         fields:
         - [Host, example.com]
-        - [uuid, waf-remap-request-deny]
+        - [uuid, modsecurity-remap-request-deny]
 
     server-response:
       status: 200
@@ -107,7 +107,7 @@ sessions:
       headers:
         fields:
         - [Host, example.com]
-        - [uuid, waf-remap-request-redirect]
+        - [uuid, modsecurity-remap-request-redirect]
 
     server-response:
       status: 200
@@ -130,7 +130,7 @@ sessions:
       headers:
         fields:
         - [Host, example.com]
-        - [uuid, waf-remap-response-deny]
+        - [uuid, modsecurity-remap-response-deny]
 
     server-response:
       status: 200
@@ -151,7 +151,7 @@ sessions:
       headers:
         fields:
         - [Host, example.com]
-        - [uuid, waf-remap-response-redirect]
+        - [uuid, modsecurity-remap-response-redirect]
 
     server-response:
       status: 200
@@ -179,7 +179,7 @@ sessions:
       headers:
         fields:
         - [Host, example.com]
-        - [uuid, waf-remap-redirect-macro]
+        - [uuid, modsecurity-remap-redirect-macro]
 
     server-response:
       status: 200
