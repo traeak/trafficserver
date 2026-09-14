@@ -42,6 +42,17 @@ autest:
     copy_to_config_dir:
       - modsecurity_rules.conf
 
+    # Blocked by request rules: the 403 deny, the 301 redirect, and the 302
+    # redirect whose CRLF-carrying target is dropped. Blocked by response
+    # rules: the 403 deny and the 301 redirect.
+    metric_checks:
+      - metric: "proxy.process.plugin.modsecurity.interventions.request"
+        value: 3
+      - metric: "proxy.process.plugin.modsecurity.interventions.response"
+        value: 2
+      - metric: "proxy.process.plugin.modsecurity.redirects_dropped"
+        value: 1
+
     log_validation:
       diags_log:
         contains:

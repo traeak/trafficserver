@@ -37,11 +37,14 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -88,18 +91,26 @@ public:
   RuleSet(RuleSet const &)            = delete;
   RuleSet &operator=(RuleSet const &) = delete;
 
+  // Add the rules of one file. On failure the reason is logged and, when asked
+  // for, returned in "error".
   bool
-  add_file(std::string const &path)
+  add_file(std::string const &path, std::string *error)
   {
     if (_rules == nullptr) {
       return false;
     }
 
-    char const *error = nullptr;
+    char const *parse_error = nullptr;
 
-    if (modsecurity::msc_rules_add_file(_rules, path.c_str(), &error) < 0) {
-      TSError("[%s] failed to load rules from %s: %s", PLUGIN_NAME, path.c_str(), error != nullptr ? error : "unknown error");
-      modsecurity::msc_rules_error_cleanup(error);
+    if (modsecurity::msc_rules_add_file(_rules, path.c_str(), &parse_error) < 0) {
+      std::string const reason =
+        "failed to load rules from " + path + ": " + (parse_error != nullptr ? parse_error : "unknown error");
+
+      TSError("[%s] %s", PLUGIN_NAME, reason.c_str());
+      if (error != nullptr) {
+        *error = reason;
+      }
+      modsecurity::msc_rules_error_cleanup(parse_error);
       return false;
     }
 
@@ -154,41 +165,47 @@ init_modsecurity()
 
 ///////////////////////////////////////////////////////////////////////////////
 // The rule files of one plugin instance, along with the rule set currently
-// loaded from them. The global instance can be reloaded at runtime; remap
-// instances are simply recreated when remap.config is reloaded.
+// loaded from them. The global plugin reloads its rules in place; a remap
+// instance is recreated whenever remap.config is reloaded.
 //
 class RuleConfig
 {
 public:
-  // Rule file paths, relative ones resolved against the configuration
-  // directory. Returns false if the rules could not be loaded.
-  bool
-  init(std::vector<std::string> const &files)
+  // Relative rule file paths are resolved against the configuration directory.
+  explicit RuleConfig(std::vector<std::string> const &files)
   {
     std::string const config_dir(TSConfigDirGet());
 
     for (auto const &file : files) {
       _files.emplace_back(!file.empty() && file[0] == '/' ? file : config_dir + "/" + file);
     }
+  }
 
-    return reload();
+  std::vector<std::string> const &
+  files() const
+  {
+    return _files;
   }
 
   // Load every rule file into a fresh rule set and make it current. The
   // previously loaded rules are kept if any file fails to parse, so that a bad
-  // edit never leaves the plugin without rules.
+  // edit never leaves the plugin without rules. When asked for, the reason for a
+  // failure is returned in "error".
   bool
-  reload()
+  reload(std::string *error = nullptr)
   {
     auto rules = std::make_shared<RuleSet>();
 
     if (rules->get() == nullptr) {
       TSError("[%s] failed to create a ModSecurity rule set", PLUGIN_NAME);
+      if (error != nullptr) {
+        *error = "failed to create a ModSecurity rule set";
+      }
       return false;
     }
 
     for (auto const &file : _files) {
-      if (!rules->add_file(file)) {
+      if (!rules->add_file(file, error)) {
         return false;
       }
     }
@@ -215,6 +232,50 @@ private:
 
 // The global plugin instance, null when the plugin is only used for remap.
 RuleConfig *g_config = nullptr;
+
+///////////////////////////////////////////////////////////////////////////////
+// Statistics on the transactions the plugin blocks. They are process wide: the
+// global plugin and every remap instance update the same counters. A remap
+// reload can load a fresh copy of this plugin, so an existing statistic is
+// looked up before one is created.
+//
+int            g_stat_interventions_request  = TS_ERROR;
+int            g_stat_interventions_response = TS_ERROR;
+int            g_stat_redirects_dropped      = TS_ERROR;
+std::once_flag g_stats_once;
+
+int
+create_stat(char const *name)
+{
+  int id = TS_ERROR;
+
+  if (TSStatFindName(name, &id) == TS_ERROR) {
+    id = TSStatCreate(name, TS_RECORDDATATYPE_INT, TS_STAT_NON_PERSISTENT, TS_STAT_SYNC_SUM);
+  }
+  if (id == TS_ERROR) {
+    TSError("[%s] failed to create the statistic %s", PLUGIN_NAME, name);
+  }
+
+  return id;
+}
+
+void
+init_stats()
+{
+  std::call_once(g_stats_once, []() {
+    g_stat_interventions_request  = create_stat("proxy.process.plugin.modsecurity.interventions.request");
+    g_stat_interventions_response = create_stat("proxy.process.plugin.modsecurity.interventions.response");
+    g_stat_redirects_dropped      = create_stat("proxy.process.plugin.modsecurity.redirects_dropped");
+  });
+}
+
+void
+increment_stat(int id)
+{
+  if (id != TS_ERROR) {
+    TSStatIntIncrement(id, 1);
+  }
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // Per transaction state. Owned by the transaction's continuation and released
@@ -330,10 +391,16 @@ check_intervention(modsecurity::Transaction *msc_txn)
     TSNote("[%s] %s", PLUGIN_NAME, iv.log);
   }
 
+  // A redirect always disrupts the transaction. Without a status of its own it
+  // would otherwise reach the origin, with the Location header stapled onto
+  // whatever the origin returned.
+  result.status = iv.url != nullptr && iv.status == 200 ? 302 : iv.status;
+
   // A redirect target may embed macro expansions of decoded request data, so it
   // can carry bytes that are not legal in a header value. Drop the redirect
   // whole rather than truncating it, which would leave a partially attacker
-  // controlled target. The transaction is still disrupted by the status.
+  // controlled target. The status is already settled above, so the transaction
+  // is still disrupted.
   if (iv.url != nullptr) {
     std::string_view const url(iv.url);
 
@@ -341,34 +408,31 @@ check_intervention(modsecurity::Transaction *msc_txn)
       result.url = url;
     } else {
       TSWarning("[%s] dropping an intervention redirect containing control characters", PLUGIN_NAME);
+      increment_stat(g_stat_redirects_dropped);
     }
   }
 
-  result.status  = iv.status;
-  result.disrupt = iv.status != 200 || !result.url.empty();
+  result.disrupt = result.status != 200;
 
-  Dbg(dbg_ctl, "intervention with status %d%s", iv.status, result.url.empty() ? "" : " and a redirect");
+  Dbg(dbg_ctl, "intervention with status %d%s", result.status, result.url.empty() ? "" : " and a redirect");
   modsecurity::msc_intervention_cleanup(&iv);
 
   return result;
 }
 
-// Record what the intervention asks for and arrange for the client response to
-// be built from it. The status and the Location header are put in place at
-// TS_HTTP_SEND_RESPONSE_HDR_HOOK, because the internal response that ATS builds
-// for an aborted transaction is a 500 unless the status is 4xx or 5xx.
+// Abort the transaction with the status of a disrupting intervention. The status
+// and the Location header are put in place at TS_HTTP_SEND_RESPONSE_HDR_HOOK,
+// because the internal response that ATS builds for an aborted transaction is a
+// 500 unless the status is 4xx or 5xx.
 void
 apply_intervention(TSHttpTxn txnp, TSCont contp, TxnContext *ctx, Intervention const &iv)
 {
+  ctx->status       = iv.status;
   ctx->redirect_url = iv.url;
 
-  if (iv.status != 200) {
-    ctx->status = iv.status;
-    TSHttpTxnStatusSet(txnp, static_cast<TSHttpStatus>(iv.status), PLUGIN_NAME);
-    TSHttpTxnErrorBodySet(txnp, TSstrndup(ERROR_BODY.data(), ERROR_BODY.size()), ERROR_BODY.size(),
-                          TSstrndup(ERROR_CTYPE.data(), ERROR_CTYPE.size()));
-  }
-
+  TSHttpTxnStatusSet(txnp, static_cast<TSHttpStatus>(iv.status), PLUGIN_NAME);
+  TSHttpTxnErrorBodySet(txnp, TSstrndup(ERROR_BODY.data(), ERROR_BODY.size()), ERROR_BODY.size(),
+                        TSstrndup(ERROR_CTYPE.data(), ERROR_CTYPE.size()));
   TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_RESPONSE_HDR_HOOK, contp);
 }
 
@@ -538,9 +602,8 @@ txn_handler(TSCont contp, TSEvent event, void *edata)
 
       if (iv.disrupt) {
         apply_intervention(txnp, contp, ctx, iv);
-        if (ctx->status != 0) {
-          reenable = TS_EVENT_HTTP_ERROR;
-        }
+        reenable = TS_EVENT_HTTP_ERROR;
+        increment_stat(g_stat_interventions_response);
       }
     }
     break;
@@ -599,6 +662,7 @@ inspect_request(TSHttpTxn txnp, RuleConfig *config)
 
     if (iv.disrupt) {
       apply_intervention(txnp, txn_contp, ctx, iv);
+      increment_stat(g_stat_interventions_request);
     }
   }
 
@@ -651,35 +715,99 @@ lifecycle_handler(TSCont /* contp */, TSEvent event, void *edata)
   return TS_EVENT_NONE;
 }
 
-// Build a rule configuration out of the plugin arguments starting at "first".
-RuleConfig *
-make_config(int argc, char const *argv[], int first)
+// The rule files named in the plugin arguments starting at "first".
+std::vector<std::string>
+collect_rule_files(int argc, char const *const *argv, int first)
 {
   if (argc <= first) {
-    TSError("[%s] no ModSecurity rule file given", PLUGIN_NAME);
-    return nullptr;
+    return {};
   }
 
-  if (!init_modsecurity()) {
-    return nullptr;
+  return std::vector<std::string>(argv + first, argv + argc);
+}
+
+// Reload handler of the global plugin, run by "traffic_ctl config reload" when
+// one of its rule files changed. The outcome is reported back, so "traffic_ctl
+// config status" shows whether the new rules took effect.
+void
+config_reload_handler(TSCfgLoadCtx ctx, void *data)
+{
+  std::string error;
+
+  if (static_cast<RuleConfig *>(data)->reload(&error)) {
+    TSCfgLoadCtxComplete(ctx, "ModSecurity rules reloaded");
+  } else {
+    TSCfgLoadCtxFail(ctx, error);
+  }
+}
+
+// Register the rule files of the global plugin with the configuration reload
+// framework: the first one as the configuration, the others as files it
+// depends on.
+void
+register_config_reload(RuleConfig *config)
+{
+  auto const &files = config->files();
+
+  TSCfgRegistrationInfo info;
+
+  info.key         = PLUGIN_NAME;
+  info.config_path = files.front();
+  info.handler     = config_reload_handler;
+  info.data        = config;
+
+  if (TSCfgRegister(&info) != TS_SUCCESS) {
+    TSError("[%s] traffic_ctl config reload will not reload the rules", PLUGIN_NAME);
+    return;
   }
 
-  std::vector<std::string> files;
+  for (auto it = std::next(files.begin()); it != files.end(); ++it) {
+    TSCfgFileDependencyInfo dependency;
 
-  for (int i = first; i < argc; ++i) {
-    files.emplace_back(argv[i]);
+    dependency.key         = PLUGIN_NAME;
+    dependency.config_path = *it;
+    if (TSCfgAddFileDependency(&dependency) != TS_SUCCESS) {
+      TSError("[%s] traffic_ctl config reload will not notice changes to %s", PLUGIN_NAME, it->c_str());
+    }
+  }
+}
+
+// Make the rule files of a remap instance children of the remap configuration
+// file in use, so that changing a rule file makes "traffic_ctl config reload"
+// reload remap.config, and with it this instance. ATS drops these associations
+// on every remap reload, which is why every new instance adds them again.
+void
+attach_to_remap_config(std::vector<std::string> const &files)
+{
+  std::string parent;
+
+  // Mirror UrlRewrite::load(): remap.yaml is used when it exists, remap.config
+  // otherwise.
+  for (char const *record : {"proxy.config.url_remap_yaml.filename", "proxy.config.url_remap.filename"}) {
+    TSMgmtString value = nullptr;
+
+    if (TSMgmtStringGet(record, &value) != TS_SUCCESS || value == nullptr) {
+      continue;
+    }
+    parent.assign(value);
+    TSfree(value);
+
+    std::string const path = !parent.empty() && parent[0] == '/' ? parent : std::string(TSConfigDirGet()) + "/" + parent;
+    std::error_code   ec;
+
+    if (std::filesystem::exists(path, ec)) {
+      break;
+    }
   }
 
-  auto *config = new RuleConfig();
-
-  if (!config->init(files)) {
-    delete config;
-    return nullptr;
+  if (parent.empty()) {
+    TSWarning("[%s] no remap configuration file found, rule file changes will not trigger a reload", PLUGIN_NAME);
+    return;
   }
 
-  Dbg(dbg_ctl, "loaded %d rule file(s)", argc - first);
-
-  return config;
+  for (auto const &file : files) {
+    TSMgmtConfigFileAdd(parent.c_str(), file.c_str());
+  }
 }
 
 } // end anonymous namespace
@@ -701,12 +829,24 @@ TSPluginInit(int argc, char const *argv[])
     return;
   }
 
-  g_config = make_config(argc, argv, 1);
-  if (g_config == nullptr) {
-    TSError("[%s] no usable rules, the plugin will not inspect any traffic", PLUGIN_NAME);
+  if (argc < 2) {
+    TSError("[%s] no ModSecurity rule file given", PLUGIN_NAME);
     return;
   }
+  if (!init_modsecurity()) {
+    return;
+  }
+  init_stats();
 
+  // The hooks and the reload registration are set up even when the rules fail to
+  // load, so that fixing the rule files and reloading puts the plugin into
+  // service without a restart.
+  g_config = new RuleConfig(collect_rule_files(argc, argv, 1));
+  if (!g_config->reload()) {
+    TSError("[%s] no usable rules, no traffic is inspected until the rule files are fixed and reloaded", PLUGIN_NAME);
+  }
+
+  register_config_reload(g_config);
   TSHttpHookAdd(TS_HTTP_READ_REQUEST_HDR_HOOK, TSContCreate(read_request_handler, nullptr));
   TSLifecycleHookAdd(TS_LIFECYCLE_MSG_HOOK, TSContCreate(lifecycle_handler, nullptr));
 }
@@ -727,14 +867,28 @@ TSReturnCode
 TSRemapNewInstance(int argc, char *argv[], void **ih, char *errbuf, int errbuf_size)
 {
   // argv[0] and argv[1] are the "from" and "to" URLs of the remap rule.
-  auto *config = make_config(argc, const_cast<char const **>(argv), 2);
+  if (argc < 3) {
+    snprintf(errbuf, errbuf_size, "[%s] no ModSecurity rule file given", PLUGIN_NAME);
+    return TS_ERROR;
+  }
+  if (!init_modsecurity()) {
+    snprintf(errbuf, errbuf_size, "[%s] failed to initialize ModSecurity", PLUGIN_NAME);
+    return TS_ERROR;
+  }
+  init_stats();
 
-  if (config == nullptr) {
-    snprintf(errbuf, errbuf_size, "[%s] unable to load the ModSecurity rules", PLUGIN_NAME);
+  auto config = std::make_unique<RuleConfig>(collect_rule_files(argc, argv, 2));
+
+  // Attach the rule files before loading them, so that fixing a rule file that
+  // fails to load still makes traffic_ctl config reload try again.
+  attach_to_remap_config(config->files());
+
+  if (std::string error; !config->reload(&error)) {
+    snprintf(errbuf, errbuf_size, "[%s] %s", PLUGIN_NAME, error.c_str());
     return TS_ERROR;
   }
 
-  *ih = config;
+  *ih = config.release();
 
   return TS_SUCCESS;
 }
