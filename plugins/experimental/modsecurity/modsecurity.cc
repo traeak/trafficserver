@@ -57,6 +57,7 @@
 #include <ts/remap.h>
 #include <ts/remap_version.h>
 
+#include "chunk_decoder.h"
 #include "intervention_policy.h"
 
 namespace
@@ -174,13 +175,19 @@ class RuleConfig
 {
 public:
   // Relative rule file paths are resolved against the configuration directory.
-  explicit RuleConfig(std::vector<std::string> const &files)
+  RuleConfig(std::vector<std::string> const &files, bool inspect_body) : _inspect_body(inspect_body)
   {
     std::string const config_dir(TSConfigDirGet());
 
     for (auto const &file : files) {
       _files.emplace_back(!file.empty() && file[0] == '/' ? file : config_dir + "/" + file);
     }
+  }
+
+  bool
+  inspect_body() const
+  {
+    return _inspect_body;
   }
 
   std::vector<std::string> const &
@@ -230,10 +237,28 @@ private:
   std::vector<std::string>  _files;
   std::shared_ptr<RuleSet>  _rules;
   mutable std::shared_mutex _mutex;
+  bool                      _inspect_body = false;
 };
 
 // The global plugin instance, null when the plugin is only used for remap.
 RuleConfig *g_config = nullptr;
+
+// Whether Traffic Server will actually buffer request bodies. Request body
+// inspection needs proxy.config.http.post_copy_size to be non-zero; otherwise
+// buffering is silently skipped and the completion hook never fires. Checked
+// once, the first time an instance asks to inspect bodies.
+bool
+request_buffering_available()
+{
+  TSMgmtInt post_copy_size = 0;
+
+  if (TSMgmtIntGet("proxy.config.http.post_copy_size", &post_copy_size) != TS_SUCCESS || post_copy_size <= 0) {
+    TSError("[%s] request body inspection needs proxy.config.http.post_copy_size to be set; bodies are not inspected", PLUGIN_NAME);
+    return false;
+  }
+
+  return true;
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // Transaction slot through which the instances of this plugin, the global plugin
@@ -312,6 +337,9 @@ struct TxnContext {
   std::string               redirect_url;
   int                       status             = 0;     // status to force on the client response
   bool                      response_inspected = false; // phases 3 and 4 have run
+  bool                      request_deferred   = false; // phase 2 waits for the buffered request body
+  bool                      request_body_done  = false; // phase 2 has run
+  bool                      request_chunked    = false; // the buffered body is chunked
 
   ~TxnContext()
   {
@@ -527,10 +555,41 @@ finish_intervention(TSHttpTxn txnp, TxnContext *ctx)
 ///////////////////////////////////////////////////////////////////////////////
 // Request and response processing.
 //
-// Feed the client request to ModSecurity, running phases 1 and 2.
-//
+// Whether the request carries a body, using the same test Traffic Server uses to
+// decide whether to buffer one: a positive Content-Length, or a Transfer-Encoding
+// header (a chunked body). Sets "chunked" when the body is chunk framed.
 bool
-process_request(TSHttpTxn txnp, TxnContext *ctx)
+request_has_body(TSMBuffer bufp, TSMLoc hdr_loc, bool &chunked)
+{
+  chunked = false;
+
+  if (TSMLoc te = TSMimeHdrFieldFind(bufp, hdr_loc, TS_MIME_FIELD_TRANSFER_ENCODING, TS_MIME_LEN_TRANSFER_ENCODING);
+      te != TS_NULL_MLOC) {
+    int         len   = 0;
+    char const *value = TSMimeHdrFieldValueStringGet(bufp, hdr_loc, te, -1, &len);
+
+    chunked =
+      value != nullptr && len == static_cast<int>(TS_HTTP_LEN_CHUNKED) && strncasecmp(value, TS_HTTP_VALUE_CHUNKED, len) == 0;
+    TSHandleMLocRelease(bufp, hdr_loc, te);
+    return true;
+  }
+
+  if (TSMLoc cl = TSMimeHdrFieldFind(bufp, hdr_loc, TS_MIME_FIELD_CONTENT_LENGTH, TS_MIME_LEN_CONTENT_LENGTH); cl != TS_NULL_MLOC) {
+    int64_t const length = TSMimeHdrFieldValueInt64Get(bufp, hdr_loc, cl, -1);
+
+    TSHandleMLocRelease(bufp, hdr_loc, cl);
+    return length > 0;
+  }
+
+  return false;
+}
+
+// Run the ModSecurity request phases that need only the headers: the connection,
+// the URI and the request headers (phase 1). Returns false if the request header
+// could not be read. When "chunked" comes back set, the request has a chunked
+// body.
+bool
+process_request_headers(TSHttpTxn txnp, TxnContext *ctx, bool &has_body, bool &chunked)
 {
   TSMBuffer bufp;
   TSMLoc    hdr_loc;
@@ -576,15 +635,73 @@ process_request(TSHttpTxn txnp, TxnContext *ctx)
   add_headers(bufp, hdr_loc, ctx->msc_txn, true);
   modsecurity::msc_process_request_headers(ctx->msc_txn);
 
-  // The request body is never handed to ModSecurity, see the plugin
-  // documentation for why. This call still has to be made so that the phase 2
-  // rules run.
-  modsecurity::msc_process_request_body(ctx->msc_txn);
+  has_body = request_has_body(bufp, hdr_loc, chunked);
 
   TSHandleMLocRelease(bufp, TS_NULL_MLOC, hdr_loc);
-  Dbg(dbg_ctl, "done processing the request");
+  Dbg(dbg_ctl, "done processing the request headers");
 
   return true;
+}
+
+// Run the phase 2 request rules. Without body inspection the body is not handed
+// to ModSecurity; this call still has to be made so that the phase 2 rules run.
+// It runs at most once per transaction.
+void
+process_request_body(TxnContext *ctx)
+{
+  if (!ctx->request_body_done) {
+    modsecurity::msc_process_request_body(ctx->msc_txn);
+    ctx->request_body_done = true;
+  }
+}
+
+// Read the buffered request body, strip any chunk framing, and hand it to
+// ModSecurity, then run the phase 2 rules. Returns whether ModSecurity wants the
+// transaction disrupted, filling "iv" when it does.
+bool
+inspect_request_body(TSHttpTxn txnp, TxnContext *ctx, Intervention &iv)
+{
+  TSIOBufferReader reader = TSHttpTxnPostBufferReaderGet(txnp);
+
+  if (reader != nullptr) {
+    modsecurity_plugin::ChunkDecoder decoder;
+    std::string                      decoded;
+
+    for (TSIOBufferBlock block = TSIOBufferReaderStart(reader); block != nullptr; block = TSIOBufferBlockNext(block)) {
+      int64_t     len   = 0;
+      char const *bytes = TSIOBufferBlockReadStart(block, reader, &len);
+
+      if (bytes == nullptr || len <= 0) {
+        continue;
+      }
+      if (ctx->request_chunked) {
+        decoder.feed(std::string_view(bytes, len), decoded);
+      } else {
+        modsecurity::msc_append_request_body(ctx->msc_txn, reinterpret_cast<unsigned char const *>(bytes), len);
+      }
+    }
+
+    if (ctx->request_chunked) {
+      if (decoder.state() == modsecurity_plugin::ChunkDecoder::State::Error) {
+        TSError("[%s] could not decode the chunked request body, inspecting the request without it", PLUGIN_NAME);
+      }
+      modsecurity::msc_append_request_body(ctx->msc_txn, reinterpret_cast<unsigned char const *>(decoded.data()), decoded.size());
+    }
+
+    TSIOBufferReaderFree(reader);
+  }
+
+  // Appending the body may already trip the request body limit.
+  if (Intervention const limit = check_intervention(ctx->msc_txn); limit.disrupt) {
+    iv = limit;
+    process_request_body(ctx);
+    return true;
+  }
+
+  process_request_body(ctx);
+  iv = check_intervention(ctx->msc_txn);
+
+  return iv.disrupt;
 }
 
 // Feed a response to ModSecurity, running phases 3 and 4. That is normally the
@@ -637,6 +754,39 @@ txn_handler(TSCont contp, TSEvent event, void *edata)
   }
 
   switch (event) {
+  case TS_EVENT_HTTP_REQUEST_BUFFER_READ_COMPLETE: {
+    // The whole request body is buffered: hand it to ModSecurity and run phase 2.
+    Intervention iv;
+
+    if (inspect_request_body(txnp, ctx, iv)) {
+      apply_intervention(txnp, contp, ctx, iv);
+      increment_stat(g_stat_interventions_request);
+      reenable = TS_EVENT_HTTP_ERROR;
+    } else {
+      // The request cleared, so the response still needs inspecting.
+      TSHttpTxnHookAdd(txnp, TS_HTTP_READ_RESPONSE_HDR_HOOK, contp);
+      TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_RESPONSE_HDR_HOOK, contp);
+    }
+  } break;
+
+  case TS_EVENT_HTTP_SEND_REQUEST_HDR:
+    // A safety net for a deferred request whose body was not buffered after all,
+    // so that phase 2 runs before the origin is contacted rather than being
+    // skipped. This hook fires after the buffer completion hook when both do, so
+    // it is a no-op once the body has been inspected.
+    if (ctx->request_deferred && !ctx->request_body_done) {
+      process_request_body(ctx);
+      if (Intervention const iv = check_intervention(ctx->msc_txn); iv.disrupt) {
+        apply_intervention(txnp, contp, ctx, iv);
+        increment_stat(g_stat_interventions_request);
+        reenable = TS_EVENT_HTTP_ERROR;
+      } else {
+        TSHttpTxnHookAdd(txnp, TS_HTTP_READ_RESPONSE_HDR_HOOK, contp);
+        TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_RESPONSE_HDR_HOOK, contp);
+      }
+    }
+    break;
+
   case TS_EVENT_HTTP_READ_RESPONSE_HDR:
     if (process_response(txnp, ctx, false)) {
       Intervention const iv = check_intervention(ctx->msc_txn);
@@ -718,10 +868,26 @@ inspect_request(TSHttpTxn txnp, RuleConfig *config)
   TSContDataSet(txn_contp, ctx);
   TSHttpTxnHookAdd(txnp, TS_HTTP_TXN_CLOSE_HOOK, txn_contp);
 
-  if (process_request(txnp, ctx)) {
-    Intervention const iv = check_intervention(ctx->msc_txn);
+  bool has_body = false;
+  bool chunked  = false;
 
-    if (iv.disrupt) {
+  if (process_request_headers(txnp, ctx, has_body, chunked)) {
+    // Inspect the body when asked to, and only for a request that has one that
+    // Traffic Server can buffer. Phase 2 is then deferred until the whole body
+    // has arrived; otherwise it runs now against the headers alone.
+    if (config->inspect_body() && has_body && request_buffering_available()) {
+      ctx->request_deferred = true;
+      ctx->request_chunked  = chunked;
+      TSHttpTxnConfigIntSet(txnp, TS_CONFIG_HTTP_REQUEST_BUFFER_ENABLED, 1);
+      TSHttpTxnHookAdd(txnp, TS_HTTP_REQUEST_BUFFER_READ_COMPLETE_HOOK, txn_contp);
+      TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_REQUEST_HDR_HOOK, txn_contp);
+      Dbg(dbg_ctl, "deferring the request phase 2 rules until the body is buffered");
+    } else {
+      process_request_body(ctx);
+    }
+
+    // A phase 1 rule, or phase 2 when it was not deferred, may already block.
+    if (Intervention const iv = check_intervention(ctx->msc_txn); iv.disrupt) {
       apply_intervention(txnp, txn_contp, ctx, iv);
       increment_stat(g_stat_interventions_request);
     }
@@ -730,14 +896,16 @@ inspect_request(TSHttpTxn txnp, RuleConfig *config)
   // Only look at the response when the request was not disrupted. A response
   // read from the origin is inspected as it arrives, so that a blocked response
   // is never cached. Any other response, such as a cache hit, is inspected just
-  // before it is sent.
-  if (ctx->status == 0) {
+  // before it is sent. When phase 2 is deferred, the response hooks are added
+  // once the buffered body clears, so that a body-blocked request never reaches
+  // them.
+  if (ctx->status == 0 && !ctx->request_deferred) {
     TSHttpTxnHookAdd(txnp, TS_HTTP_READ_RESPONSE_HDR_HOOK, txn_contp);
     TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_RESPONSE_HDR_HOOK, txn_contp);
     return false;
   }
 
-  return true;
+  return ctx->status != 0;
 }
 
 int
@@ -780,15 +948,28 @@ lifecycle_handler(TSCont /* contp */, TSEvent event, void *edata)
   return TS_EVENT_NONE;
 }
 
-// The rule files named in the plugin arguments starting at "first".
-std::vector<std::string>
-collect_rule_files(int argc, char const *const *argv, int first)
+// The plugin arguments: the rule files, and whether to inspect request bodies.
+struct PluginArgs {
+  std::vector<std::string> files;
+  bool                     inspect_body = false;
+};
+
+// Parse the plugin arguments starting at "first". "--inspect-request-body" turns
+// on request body inspection; everything else is a rule file.
+PluginArgs
+parse_args(int argc, char const *const *argv, int first)
 {
-  if (argc <= first) {
-    return {};
+  PluginArgs args;
+
+  for (int i = first; i < argc; ++i) {
+    if (std::strcmp(argv[i], "--inspect-request-body") == 0) {
+      args.inspect_body = true;
+    } else {
+      args.files.emplace_back(argv[i]);
+    }
   }
 
-  return std::vector<std::string>(argv + first, argv + argc);
+  return args;
 }
 
 // Reload handler of the global plugin, run by "traffic_ctl config reload" when
@@ -894,10 +1075,6 @@ TSPluginInit(int argc, char const *argv[])
     return;
   }
 
-  if (argc < 2) {
-    TSError("[%s] no ModSecurity rule file given", PLUGIN_NAME);
-    return;
-  }
   if (!init_modsecurity()) {
     return;
   }
@@ -907,7 +1084,14 @@ TSPluginInit(int argc, char const *argv[])
   // The hooks and the reload registration are set up even when the rules fail to
   // load, so that fixing the rule files and reloading puts the plugin into
   // service without a restart.
-  g_config = new RuleConfig(collect_rule_files(argc, argv, 1));
+  PluginArgs const args = parse_args(argc, argv, 1);
+
+  if (args.files.empty()) {
+    TSError("[%s] no ModSecurity rule file given", PLUGIN_NAME);
+    return;
+  }
+
+  g_config = new RuleConfig(args.files, args.inspect_body);
   if (!g_config->reload()) {
     TSError("[%s] no usable rules, no traffic is inspected until the rule files are fixed and reloaded", PLUGIN_NAME);
   }
@@ -934,17 +1118,20 @@ TSReturnCode
 TSRemapNewInstance(int argc, char *argv[], void **ih, char *errbuf, int errbuf_size)
 {
   // argv[0] and argv[1] are the "from" and "to" URLs of the remap rule.
-  if (argc < 3) {
-    snprintf(errbuf, errbuf_size, "[%s] no ModSecurity rule file given", PLUGIN_NAME);
-    return TS_ERROR;
-  }
   if (!init_modsecurity()) {
     snprintf(errbuf, errbuf_size, "[%s] failed to initialize ModSecurity", PLUGIN_NAME);
     return TS_ERROR;
   }
   init_stats();
 
-  auto config = std::make_unique<RuleConfig>(collect_rule_files(argc, argv, 2));
+  PluginArgs const args = parse_args(argc, argv, 2);
+
+  if (args.files.empty()) {
+    snprintf(errbuf, errbuf_size, "[%s] no ModSecurity rule file given", PLUGIN_NAME);
+    return TS_ERROR;
+  }
+
+  auto config = std::make_unique<RuleConfig>(args.files, args.inspect_body);
 
   // Attach the rule files before loading them, so that fixing a rule file that
   // fails to load still makes traffic_ctl config reload try again.

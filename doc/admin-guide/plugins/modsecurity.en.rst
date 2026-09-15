@@ -265,14 +265,15 @@ What is inspected
 The plugin runs the ModSecurity phases that do not need a message body. As a
 global plugin it uses these hooks:
 
-==================================  ===================================================
-|TS| hook                           ModSecurity processing
-==================================  ===================================================
-``TS_HTTP_READ_REQUEST_HDR_HOOK``   connection, URI, request headers (phases 1, 2)
-``TS_HTTP_READ_RESPONSE_HDR_HOOK``  headers of an origin response (phases 3, 4)
-``TS_HTTP_SEND_RESPONSE_HDR_HOOK``  headers of any other response (phases 3, 4)
-``TS_HTTP_TXN_CLOSE_HOOK``          ModSecurity logging and cleanup
-==================================  ===================================================
+========================================  =================================================
+|TS| hook                                 ModSecurity processing
+========================================  =================================================
+``TS_HTTP_READ_REQUEST_HDR_HOOK``         connection, URI, request headers (phase 1)
+``TS_HTTP_REQUEST_BUFFER_READ_COMPLETE``  request body, then phase 2 (only when enabled)
+``TS_HTTP_READ_RESPONSE_HDR_HOOK``        headers of an origin response (phases 3, 4)
+``TS_HTTP_SEND_RESPONSE_HDR_HOOK``        headers of any other response (phases 3, 4)
+``TS_HTTP_TXN_CLOSE_HOOK``                ModSecurity logging and cleanup
+========================================  =================================================
 
 Response phase rules run on every response. A response fetched from the origin
 is inspected as soon as its headers arrive, so a response the rules block is
@@ -293,6 +294,36 @@ In both modes the client address and port are taken from the client
 connection, and the server address and port from the |TS| port the request
 arrived on, so rules on ``REMOTE_ADDR``, ``REMOTE_PORT``, ``SERVER_ADDR`` and
 ``SERVER_PORT`` work as expected.
+
+Request body inspection
+=======================
+
+By default the request body is not inspected, and the phase 2 rules run against
+the headers alone. Pass the ``--inspect-request-body`` argument, in
+:file:`plugin.config` or as a ``@pparam``, to inspect it::
+
+   modsecurity.so --inspect-request-body modsecurity/example.conf
+
+With it, a request that has a body is held until the whole body has arrived,
+then the body is handed to ModSecurity and the phase 2 rules run against it,
+before the origin is contacted. This is what the ``REQUEST_BODY`` variable and
+the Core Rule Set's request body rules need. A blocked request never reaches the
+origin. The body is inspected in both modes, and for both a plain and a chunked
+body.
+
+It requires and affects the following:
+
+- ``SecRequestBodyAccess On`` must be set in the rules, or ModSecurity ignores
+  the body. The recommended ModSecurity configuration sets it.
+- ``proxy.config.http.post_copy_size`` must be non-zero; it is the largest body
+  |TS| buffers, and it bounds the body the plugin can inspect. A request whose
+  body exceeds it fails. Raising it together with
+  ``proxy.config.http.max_post_size`` lets an over-large body with a known
+  length be rejected up front with a 413 rather than failing mid-body. If
+  ``post_copy_size`` is zero the plugin logs an error and inspects no bodies.
+- Buffering holds each such request in memory until its body is complete, and
+  the origin is not contacted until then, so the upload no longer streams. Turn
+  the option on only where request body inspection is worth that cost.
 
 Interventions
 =============
@@ -366,8 +397,9 @@ Limitations
 
 These apply to both modes.
 
-- ``REQUEST_BODY`` is not inspected. Doing so would require buffering the
-  entire request body before it could be sent to the origin.
+- ``REQUEST_BODY`` is inspected only when ``--inspect-request-body`` is set; see
+  Request body inspection for the requirements and cost. Without it, rules on
+  the request body cannot match.
 - ``RESPONSE_BODY`` is not inspected. The body would have to be decompressed
   first, which is expensive in a proxy. See
   `ModSecurity issue 2494 <https://github.com/SpiderLabs/ModSecurity/issues/2494>`_.
@@ -376,6 +408,7 @@ These apply to both modes.
   not parse. Should a later version accept it, the plugin logs a warning once
   and ignores the pause.
 
-Rules that depend on either body can never match. When running the OWASP Core
-Rule Set they are best disabled with ``SecRuleRemoveById`` so that they are not
-evaluated at all.
+Rules that depend on the response body can never match, and request body rules
+match only with ``--inspect-request-body``. Rules that cannot match under the
+chosen configuration are best disabled with ``SecRuleRemoveById`` so that they
+are not evaluated at all.

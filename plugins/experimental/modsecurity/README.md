@@ -137,12 +137,28 @@ modsecurity/
 
 See the admin guide for the details.
 
+## Request body inspection
+
+By default the request body is not inspected. Pass `--inspect-request-body` in
+`plugin.config` or as a `@pparam` to inspect it:
+
+```
+modsecurity.so --inspect-request-body modsecurity/example.conf
+```
+
+The request is then held until its whole body has arrived, the body is handed to
+ModSecurity, and the phase 2 rules run against it before the origin is
+contacted. It needs `SecRequestBodyAccess On` in the rules and a non-zero
+`proxy.config.http.post_copy_size`, which bounds the inspectable body size.
+Buffering holds each such request in memory and stops its upload from streaming,
+so enable it only where that cost is worth it.
+
 ## Limitations
 
 These apply to both modes.
 
- - No `REQUEST_BODY` inspection. The request body would have to be buffered in
-   full before it could be forwarded to the origin.
+ - `REQUEST_BODY` is inspected only with `--inspect-request-body` (see below).
+   Without it, request body rules cannot match.
  - No `RESPONSE_BODY` inspection. The body would have to be decompressed first,
    which is expensive for a proxy. See
    https://github.com/SpiderLabs/ModSecurity/issues/2494.

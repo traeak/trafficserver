@@ -15,14 +15,17 @@
 #
 #######################
 
-add_atsplugin(modsecurity modsecurity.cc intervention_policy.cc)
+add_atsplugin(modsecurity modsecurity.cc intervention_policy.cc chunk_decoder.cc)
 
 target_link_libraries(modsecurity PRIVATE modsecurity::modsecurity)
 verify_global_plugin(modsecurity)
 verify_remap_plugin(modsecurity)
 
 if(BUILD_TESTING)
-  add_executable(test_modsecurity unit_tests/test_intervention_policy.cc intervention_policy.cc)
+  add_executable(
+    test_modsecurity unit_tests/test_intervention_policy.cc unit_tests/test_chunk_decoder.cc intervention_policy.cc
+                     chunk_decoder.cc
+  )
   target_include_directories(test_modsecurity PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_modsecurity PRIVATE Catch2::Catch2WithMain)
   add_catch2_test(NAME test_modsecurity COMMAND test_modsecurity)
