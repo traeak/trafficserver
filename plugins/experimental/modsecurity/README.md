@@ -36,9 +36,20 @@ map http://example.com/ http://origin/ @plugin=modsecurity.so @pparam=modsecurit
 ```
 
 In both modes the rule files are loaded in the order given, and a relative path
-is resolved against the Traffic Server configuration directory. Choose one mode
-for a given transaction: if both apply, the transaction is inspected by each
-instance against its own rules.
+is resolved against the Traffic Server configuration directory.
+
+## Using both modes
+
+The global plugin and remap instances can run together: a system-wide baseline,
+such as the OWASP CRS, in `plugin.config`, and endpoint-specific rules on the
+remap rules of the endpoints that need them.
+
+A matching transaction is inspected by both, each against its own rule set: the
+global plugin first, then the remap instance if the request was not blocked.
+Whichever instance blocks first decides the response, and the other neither
+inspects nor counts it. A remap instance can only add to the baseline: its
+`SecRuleRemoveById` affects only its own rules. Keep remap rule files to what is
+specific to the endpoint, since the baseline already ran.
 
 ## Reloading rules
 
@@ -57,6 +68,13 @@ Remap plugin: a changed rule file reloads `remap.config`, which recreates the
 remap instances. A rule file that fails to parse fails the whole `remap.config`
 load: on a reload the previous remap configuration stays in effect, and at
 startup Traffic Server does not start.
+
+## Responses
+
+Response rules run on every response: an origin response as its headers arrive,
+so a blocked response is never cached, and any other response, such as a cache
+hit, just before it is sent. A cache hit cannot be redirected: an intervention
+on one with a status below 400 responds with 403 instead.
 
 ## Statistics
 
@@ -79,20 +97,47 @@ Both modes update the same process wide counters of blocked transactions:
 
 ## Working with the OWASP CRS
 
- - Download the [Core Rule Set](https://github.com/coreruleset/coreruleset)
- - Copy `crs-setup.conf.example` next to the rules as `crs-setup.conf`, and the
-   `rules` directory alongside it
- - Copy `owasp.conf` from this directory into the same place, and name it in
-   `plugin.config` or in the remap rule's `@pparam`
+[coreruleset.org](https://coreruleset.org) publishes the OWASP Core Rule Set, up
+to date generic attack detection rules for ModSecurity. It runs on top of a
+base configuration made from two files in the
+[ModSecurity repository](https://github.com/owasp-modsecurity/ModSecurity):
+`modsecurity.conf-recommended` and `unicode.mapping`. The steps below build this
+layout under the Traffic Server configuration directory:
 
-To test, send a request with a `User-Agent: Nikto` header; the default action
-logs a message to `traffic.out`.
+```
+modsecurity/
+  crs.conf              owasp.conf from this directory
+  modsecurity.conf      ModSecurity's modsecurity.conf-recommended
+  unicode.mapping       ModSecurity's unicode.mapping
+  crs/                  the downloaded CRS release
+    crs-setup.conf      copied from crs-setup.conf.example
+    plugins/
+    rules/
+```
+
+1. Download a CRS release, extract it as `modsecurity/crs`, and copy
+   `crs-setup.conf.example` to `crs-setup.conf`.
+2. Fetch the two ModSecurity files from the tag that matches the installed
+   libmodsecurity, for example `v3.0.14`:
+
+   ```
+   cd modsecurity
+   curl -L -o modsecurity.conf https://raw.githubusercontent.com/owasp-modsecurity/ModSecurity/v3.0.14/modsecurity.conf-recommended
+   curl -L -O https://raw.githubusercontent.com/owasp-modsecurity/ModSecurity/v3.0.14/unicode.mapping
+   ```
+
+3. In `modsecurity.conf`, set `SecRuleEngine On` (the recommended file only
+   detects) and point `SecAuditLog` at a file Traffic Server can write. Keep the
+   mapping file named `unicode.mapping`.
+4. Copy `owasp.conf` from this directory to `modsecurity/crs.conf`.
+5. Name `modsecurity/crs.conf` in `plugin.config` or in a remap rule's
+   `@pparam`, and restart Traffic Server.
+6. Send a request with a `User-Agent: Nikto` header: the CRS blocks it with a
+   403.
+
+See the admin guide for the details.
 
 ## Limitations
-
-> **Warning:** response phase rules run only on responses fetched from the
-> origin. A cache hit never reaches `TS_HTTP_READ_RESPONSE_HDR_HOOK`, so the
-> response rules silently skip it. Request phase rules run on every transaction.
 
 These apply to both modes.
 
@@ -101,6 +146,9 @@ These apply to both modes.
  - No `RESPONSE_BODY` inspection. The body would have to be decompressed first,
    which is expensive for a proxy. See
    https://github.com/SpiderLabs/ModSecurity/issues/2494.
+ - The `pause` action is not supported. libmodsecurity 3.0.14 refuses to load a
+   rule file that uses it; should a later version accept it, the plugin logs a
+   warning once and ignores the pause.
  - Rules that depend on those bodies never match, and are best removed with
    `SecRuleRemoveById`.
  - A `redirect:` target containing a control character is discarded (the

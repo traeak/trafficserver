@@ -57,6 +57,8 @@
 #include <ts/remap.h>
 #include <ts/remap_version.h>
 
+#include "intervention_policy.h"
+
 namespace
 {
 constexpr char PLUGIN_NAME[]    = "modsecurity";
@@ -234,6 +236,29 @@ private:
 RuleConfig *g_config = nullptr;
 
 ///////////////////////////////////////////////////////////////////////////////
+// Transaction slot through which the instances of this plugin, the global plugin
+// and the remap instances, tell each other which of them blocked a transaction.
+// It is reserved by name, so that a remap instance loaded from a separate copy of
+// this plugin shares it with the global plugin.
+//
+int g_txn_arg = -1;
+
+void
+init_txn_arg()
+{
+  int index = -1;
+
+  if (TSUserArgIndexNameLookup(TS_USER_ARGS_TXN, PLUGIN_NAME, &index, nullptr) == TS_SUCCESS ||
+      TSUserArgIndexReserve(TS_USER_ARGS_TXN, PLUGIN_NAME, "the modsecurity instance that blocked the transaction", &index) ==
+        TS_SUCCESS) {
+    g_txn_arg = index;
+  } else {
+    TSError("[%s] failed to reserve a transaction argument, the global and remap plugins may inspect each other's blocks",
+            PLUGIN_NAME);
+  }
+}
+
+///////////////////////////////////////////////////////////////////////////////
 // Statistics on the transactions the plugin blocks. They are process wide: the
 // global plugin and every remap instance update the same counters. A remap
 // reload can load a fresh copy of this plugin, so an existing statistic is
@@ -285,7 +310,8 @@ struct TxnContext {
   modsecurity::Transaction *msc_txn = nullptr;
   std::shared_ptr<RuleSet>  rules; // keeps the rules alive for this transaction
   std::string               redirect_url;
-  int                       status = 0; // status to force on the client response
+  int                       status             = 0;     // status to force on the client response
+  bool                      response_inspected = false; // phases 3 and 4 have run
 
   ~TxnContext()
   {
@@ -296,12 +322,23 @@ struct TxnContext {
   }
 };
 
-// What ModSecurity wants us to do, extracted from a ModSecurityIntervention.
-struct Intervention {
-  bool        disrupt = false;
-  int         status  = 200;
-  std::string url;
-};
+using modsecurity_plugin::decide_intervention;
+using modsecurity_plugin::Intervention;
+
+// Whether another instance of this plugin already blocked the transaction. The
+// response is then that instance's block response, which this one must neither
+// inspect nor count again.
+bool
+blocked_by_another_instance(TSHttpTxn txnp, TxnContext const *ctx)
+{
+  if (g_txn_arg < 0) {
+    return false;
+  }
+
+  void *const blocker = TSUserArgGet(txnp, g_txn_arg);
+
+  return blocker != nullptr && blocker != ctx;
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // Small helpers.
@@ -379,40 +416,35 @@ Intervention
 check_intervention(modsecurity::Transaction *msc_txn)
 {
   modsecurity::ModSecurityIntervention iv;
-  Intervention                         result;
 
   modsecurity::intervention::clean(&iv);
 
+  // msc_intervention() returns the disruptive flag of the intervention.
   if (modsecurity::msc_intervention(msc_txn, &iv) == 0) {
-    return result;
+    return {};
   }
 
   if (iv.log != nullptr) {
     TSNote("[%s] %s", PLUGIN_NAME, iv.log);
   }
 
-  // A redirect always disrupts the transaction. Without a status of its own it
-  // would otherwise reach the origin, with the Location header stapled onto
-  // whatever the origin returned.
-  result.status = iv.url != nullptr && iv.status == 200 ? 302 : iv.status;
+  // The pause action is not supported. libmodsecurity 3.0.14 already refuses to
+  // load a rule that uses it; should a later version report a pause, say so once
+  // rather than drop it silently.
+  if (iv.pause != 0) {
+    static std::once_flag warned;
 
-  // A redirect target may embed macro expansions of decoded request data, so it
-  // can carry bytes that are not legal in a header value. Drop the redirect
-  // whole rather than truncating it, which would leave a partially attacker
-  // controlled target. The status is already settled above, so the transaction
-  // is still disrupted.
-  if (iv.url != nullptr) {
-    std::string_view const url(iv.url);
-
-    if (std::none_of(url.begin(), url.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; })) {
-      result.url = url;
-    } else {
-      TSWarning("[%s] dropping an intervention redirect containing control characters", PLUGIN_NAME);
-      increment_stat(g_stat_redirects_dropped);
-    }
+    std::call_once(warned,
+                   [&iv]() { TSWarning("[%s] ignoring the pause action (%d ms), it is not supported", PLUGIN_NAME, iv.pause); });
+    Dbg(dbg_ctl, "ignoring a pause of %d ms", iv.pause);
   }
 
-  result.disrupt = result.status != 200;
+  Intervention result = decide_intervention(iv.disruptive != 0, iv.status, iv.url);
+
+  if (result.url_dropped) {
+    TSWarning("[%s] dropping an intervention redirect containing control characters", PLUGIN_NAME);
+    increment_stat(g_stat_redirects_dropped);
+  }
 
   Dbg(dbg_ctl, "intervention with status %d%s", result.status, result.url.empty() ? "" : " and a redirect");
   modsecurity::msc_intervention_cleanup(&iv);
@@ -429,6 +461,9 @@ apply_intervention(TSHttpTxn txnp, TSCont contp, TxnContext *ctx, Intervention c
 {
   ctx->status       = iv.status;
   ctx->redirect_url = iv.url;
+  if (g_txn_arg >= 0) {
+    TSUserArgSet(txnp, g_txn_arg, ctx);
+  }
 
   TSHttpTxnStatusSet(txnp, static_cast<TSHttpStatus>(iv.status), PLUGIN_NAME);
   TSHttpTxnErrorBodySet(txnp, TSstrndup(ERROR_BODY.data(), ERROR_BODY.size()), ERROR_BODY.size(),
@@ -552,15 +587,20 @@ process_request(TSHttpTxn txnp, TxnContext *ctx)
   return true;
 }
 
-// Feed the origin response to ModSecurity, running phases 3 and 4.
+// Feed a response to ModSecurity, running phases 3 and 4. That is normally the
+// response read from the origin; "served" selects the response about to be sent
+// to the client instead, for a response that never came from the origin, such
+// as a cache hit.
 bool
-process_response(TSHttpTxn txnp, TxnContext *ctx)
+process_response(TSHttpTxn txnp, TxnContext *ctx, bool served)
 {
   TSMBuffer bufp;
   TSMLoc    hdr_loc;
 
-  if (TSHttpTxnServerRespGet(txnp, &bufp, &hdr_loc) != TS_SUCCESS) {
-    Dbg(dbg_ctl, "unable to retrieve the server response header");
+  TSReturnCode const found = served ? TSHttpTxnClientRespGet(txnp, &bufp, &hdr_loc) : TSHttpTxnServerRespGet(txnp, &bufp, &hdr_loc);
+
+  if (found != TS_SUCCESS) {
+    Dbg(dbg_ctl, "unable to retrieve the %s response header", served ? "client" : "server");
     return false;
   }
 
@@ -573,6 +613,7 @@ process_response(TSHttpTxn txnp, TxnContext *ctx)
 
   // As with the request body, the response body is not inspected.
   modsecurity::msc_process_response_body(ctx->msc_txn);
+  ctx->response_inspected = true;
 
   TSHandleMLocRelease(bufp, TS_NULL_MLOC, hdr_loc);
   Dbg(dbg_ctl, "done processing the response");
@@ -597,7 +638,7 @@ txn_handler(TSCont contp, TSEvent event, void *edata)
 
   switch (event) {
   case TS_EVENT_HTTP_READ_RESPONSE_HDR:
-    if (process_response(txnp, ctx)) {
+    if (process_response(txnp, ctx, false)) {
       Intervention const iv = check_intervention(ctx->msc_txn);
 
       if (iv.disrupt) {
@@ -609,7 +650,27 @@ txn_handler(TSCont contp, TSEvent event, void *edata)
     break;
 
   case TS_EVENT_HTTP_SEND_RESPONSE_HDR:
-    finish_intervention(txnp, ctx);
+    if (ctx->status != 0) {
+      finish_intervention(txnp, ctx);
+    } else if (!ctx->response_inspected && !blocked_by_another_instance(txnp, ctx) && process_response(txnp, ctx, true)) {
+      Intervention iv = check_intervention(ctx->msc_txn);
+
+      if (iv.disrupt) {
+        // A response that never came from the origin, such as a cache hit. From
+        // this hook ATS aborts a transaction cleanly only with a status of 400 or
+        // above: anything lower, a redirect included, would go out as a 500
+        // because the hooks that fix it up have already run. Block those with a
+        // 403, so that nothing of the cached response reaches the client.
+        if (iv.status < 400) {
+          Dbg(dbg_ctl, "blocking with a 403 instead of %d, the response did not come from the origin", iv.status);
+          iv.status = TS_HTTP_STATUS_FORBIDDEN;
+          iv.url.clear();
+        }
+        apply_intervention(txnp, contp, ctx, iv);
+        reenable = TS_EVENT_HTTP_ERROR;
+        increment_stat(g_stat_interventions_response);
+      }
+    }
     break;
 
   case TS_EVENT_HTTP_TXN_CLOSE:
@@ -666,9 +727,13 @@ inspect_request(TSHttpTxn txnp, RuleConfig *config)
     }
   }
 
-  // Only look at the origin response when the request was not disrupted.
+  // Only look at the response when the request was not disrupted. A response
+  // read from the origin is inspected as it arrives, so that a blocked response
+  // is never cached. Any other response, such as a cache hit, is inspected just
+  // before it is sent.
   if (ctx->status == 0) {
     TSHttpTxnHookAdd(txnp, TS_HTTP_READ_RESPONSE_HDR_HOOK, txn_contp);
+    TSHttpTxnHookAdd(txnp, TS_HTTP_SEND_RESPONSE_HDR_HOOK, txn_contp);
     return false;
   }
 
@@ -837,6 +902,7 @@ TSPluginInit(int argc, char const *argv[])
     return;
   }
   init_stats();
+  init_txn_arg();
 
   // The hooks and the reload registration are set up even when the rules fail to
   // load, so that fixing the rule files and reloading puts the plugin into
@@ -858,6 +924,7 @@ TSReturnCode
 TSRemapInit(TSRemapInterface *api_info, char *errbuf, int errbuf_size)
 {
   CHECK_REMAP_API_COMPATIBILITY(api_info, errbuf, errbuf_size);
+  init_txn_arg();
   Dbg(dbg_ctl, "remap plugin is successfully initialized");
 
   return TS_SUCCESS;

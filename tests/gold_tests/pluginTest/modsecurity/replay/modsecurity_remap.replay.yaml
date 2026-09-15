@@ -42,12 +42,12 @@ autest:
     copy_to_config_dir:
       - modsecurity_rules.conf
 
-    # Blocked by request rules: the 403 deny, the 301 redirect, and the 302
-    # redirect whose CRLF-carrying target is dropped. Blocked by response
-    # rules: the 403 deny and the 301 redirect.
+    # Blocked by request rules: the 403 deny, the 301 redirect, the 302
+    # redirect whose CRLF-carrying target is dropped, and the redirect that sets
+    # status 200. Blocked by response rules: the 403 deny and the 301 redirect.
     metric_checks:
       - metric: "proxy.process.plugin.modsecurity.interventions.request"
-        value: 3
+        value: 4
       - metric: "proxy.process.plugin.modsecurity.interventions.response"
         value: 2
       - metric: "proxy.process.plugin.modsecurity.redirects_dropped"
@@ -204,3 +204,27 @@ sessions:
       headers:
         fields:
         - [Set-Cookie, {as: absent}]
+
+  # Rule 1239 is a redirect that sets status 200. It must still block the
+  # request with a 302 rather than let it through to the origin.
+  - client-request:
+      method: GET
+      url: /redirected-status-200?testparam=test5
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, example.com]
+        - [uuid, modsecurity-remap-request-redirect-status-200]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Content-Length, "0"]
+
+    proxy-response:
+      status: 302
+      headers:
+        fields:
+        - [Location, "https://www.example.com/", equal]

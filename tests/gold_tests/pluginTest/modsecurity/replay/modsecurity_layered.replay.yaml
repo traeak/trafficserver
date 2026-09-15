@@ -1,0 +1,175 @@
+#  Licensed to the Apache Software Foundation (ASF) under one
+#  or more contributor license agreements.  See the NOTICE file
+#  distributed with this work for additional information
+#  regarding copyright ownership.  The ASF licenses this file
+#  to you under the Apache License, Version 2.0 (the
+#  "License"); you may not use this file except in compliance
+#  with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
+meta:
+  version: "1.0"
+
+autest:
+  description: 'Verify a global baseline and an endpoint-specific remap instance working together'
+
+  dns:
+    name: 'dns'
+
+  server:
+    name: 'server'
+
+  client:
+    name: 'client'
+
+  ats:
+    name: 'ts'
+
+    process_config:
+      enable_cache: false
+
+    records_config:
+      proxy.config.diags.debug.enabled: 1
+      proxy.config.diags.debug.tags: modsecurity
+
+    copy_to_config_dir:
+      - modsecurity_layered_global.conf
+      - modsecurity_layered_remap.conf
+
+    plugin_config:
+      - name: 'modsecurity.so'
+        args:
+          - 'modsecurity_layered_global.conf'
+
+    # Blocked requests: the baseline on the endpoint and the endpoint rule.
+    # Blocked responses: the baseline response rule. Each is counted once, by the
+    # instance that blocked it.
+    metric_checks:
+      - metric: "proxy.process.plugin.modsecurity.interventions.request"
+        value: 2
+      - metric: "proxy.process.plugin.modsecurity.interventions.response"
+        value: 1
+
+    remap_config:
+      - from: "http://remap.example.com/"
+        to: "http://backend.example.com:{SERVER_HTTP_PORT}/"
+        plugins:
+          - name: 'modsecurity.so'
+            args:
+              - 'modsecurity_layered_remap.conf'
+      - from: "http://other.example.com/"
+        to: "http://backend.example.com:{SERVER_HTTP_PORT}/"
+
+sessions:
+- transactions:
+
+  # Neither the baseline nor the endpoint rules match.
+  - client-request:
+      method: GET
+      url: /allowed
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, remap.example.com]
+        - [uuid, modsecurity-layered-allowed]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Content-Length, "0"]
+
+    proxy-response:
+      status: 200
+
+  # The baseline applies on the endpoint too. The SecRuleRemoveById in the remap
+  # rule file cannot relax it.
+  - client-request:
+      method: GET
+      url: /baseline?g=block
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, remap.example.com]
+        - [uuid, modsecurity-layered-baseline]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Content-Length, "0"]
+
+    proxy-response:
+      status: 403
+
+  # The endpoint rule only applies to the endpoint whose remap rule loads it.
+  - client-request:
+      method: GET
+      url: /other?r=block
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, other.example.com]
+        - [uuid, modsecurity-layered-other-endpoint]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Content-Length, "0"]
+
+    proxy-response:
+      status: 200
+
+  # The endpoint rule blocks with a 406. The global plugin must leave that block
+  # response alone, or rule 3003 turns it into a 410.
+  - client-request:
+      method: GET
+      url: /endpoint?r=block
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, remap.example.com]
+        - [uuid, modsecurity-layered-endpoint]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Content-Length, "0"]
+
+    proxy-response:
+      status: 406
+
+  # The baseline response rule blocks with a 403. The remap instance must leave
+  # that block response alone, or rule 4003 turns it into a 410.
+  - client-request:
+      method: GET
+      url: /response
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, remap.example.com]
+        - [uuid, modsecurity-layered-response]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [x-global, block]
+        - [Content-Length, "0"]
+
+    proxy-response:
+      status: 403

@@ -1,0 +1,169 @@
+#  Licensed to the Apache Software Foundation (ASF) under one
+#  or more contributor license agreements.  See the NOTICE file
+#  distributed with this work for additional information
+#  regarding copyright ownership.  The ASF licenses this file
+#  to you under the Apache License, Version 2.0 (the
+#  "License"); you may not use this file except in compliance
+#  with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
+meta:
+  version: "1.0"
+
+autest:
+  description: 'Verify the response rules run on responses served from the cache'
+
+  dns:
+    name: 'dns'
+
+  server:
+    name: 'server'
+
+  client:
+    name: 'client'
+
+  ats:
+    name: 'ts'
+
+    process_config:
+      enable_cache: true
+
+    records_config:
+      proxy.config.diags.debug.enabled: 1
+      proxy.config.diags.debug.tags: modsecurity
+
+    copy_to_config_dir:
+      - modsecurity_cache_rules.conf
+
+    plugin_config:
+      - name: 'modsecurity.so'
+        args:
+          - 'modsecurity_cache_rules.conf'
+
+    # Both blocks happen on cache hits, in the response phase.
+    metric_checks:
+      - metric: "proxy.process.plugin.modsecurity.interventions.request"
+        value: 0
+      - metric: "proxy.process.plugin.modsecurity.interventions.response"
+        value: 2
+
+    remap_config:
+      - from: "http://example.com/"
+        to: "http://backend.example.com:{SERVER_HTTP_PORT}/"
+
+sessions:
+- transactions:
+
+  # Fetch the object from the origin and cache it. No rule matches.
+  - client-request:
+      method: GET
+      url: /cached
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, example.com]
+        - [uuid, modsecurity-cache-fill]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Cache-Control, max-age=300]
+        - [Content-Length, "3"]
+      content:
+        encoding: plain
+        data: abc
+
+    proxy-response:
+      status: 200
+
+  # A cache hit the rules do not block. The Age header shows it came from the
+  # cache rather than the origin.
+  - client-request:
+      delay: 1s
+      method: GET
+      url: /cached
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, example.com]
+        - [uuid, modsecurity-cache-hit]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Cache-Control, max-age=300]
+        - [Content-Length, "3"]
+      content:
+        encoding: plain
+        data: abc
+
+    proxy-response:
+      status: 200
+      headers:
+        fields:
+        - [Age, {as: present}]
+
+  # Rule 9101 blocks the cache hit with a 403.
+  - client-request:
+      method: GET
+      url: /cached
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, example.com]
+        - [X-Test, block]
+        - [uuid, modsecurity-cache-block]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Cache-Control, max-age=300]
+        - [Content-Length, "3"]
+      content:
+        encoding: plain
+        data: abc
+
+    proxy-response:
+      status: 403
+
+  # Rule 9102 asks for a redirect. Fetched from the origin this would be a 302;
+  # on a cache hit the plugin blocks with a 403 and sends no Location header.
+  - client-request:
+      method: GET
+      url: /cached
+      version: '1.1'
+      headers:
+        fields:
+        - [Host, example.com]
+        - [X-Test, redirect]
+        - [uuid, modsecurity-cache-redirect]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [Cache-Control, max-age=300]
+        - [Content-Length, "3"]
+      content:
+        encoding: plain
+        data: abc
+
+    proxy-response:
+      status: 403
+      headers:
+        fields:
+        - [Location, {as: absent}]

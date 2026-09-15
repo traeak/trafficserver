@@ -32,10 +32,8 @@ transaction, or as a remap plugin, in which case it inspects only the
 transactions matching that remap rule. Each instance has its own set of rule
 files.
 
-Choose one mode for a given transaction. If the plugin is loaded as a global
-plugin *and* on a remap rule, a transaction matching that rule is inspected by
-both instances, each against its own rule files, unless the global plugin has
-already blocked it.
+The two modes can also run together, with a system-wide baseline in the global
+plugin and endpoint-specific rules on remap rules. See Using both modes.
 
 Building
 ========
@@ -74,6 +72,134 @@ In both modes the rule files are loaded in the order given, and a relative path
 is resolved against the |TS| configuration directory. ``Include`` directives
 inside a rule file are resolved relative to the including file, which is how
 the OWASP Core Rule Set is normally pulled in.
+
+libmodsecurity does not support ``IncludeOptional``, and an ``Include`` whose
+pattern matches no file fails the load, like any other error in a rule file.
+
+Basic setup with the OWASP Core Rule Set
+----------------------------------------
+
+`coreruleset.org <https://coreruleset.org>`_ publishes the OWASP Core Rule Set,
+up to date generic attack detection rules for ModSecurity. It runs on top of a
+ModSecurity base configuration made from two files in the
+`ModSecurity repository <https://github.com/owasp-modsecurity/ModSecurity>`_:
+``modsecurity.conf-recommended`` and ``unicode.mapping``.
+
+The steps below build this layout under the |TS| configuration directory::
+
+   modsecurity/
+     crs.conf              the file the plugin loads
+     modsecurity.conf      from ModSecurity's modsecurity.conf-recommended
+     unicode.mapping       from ModSecurity's unicode.mapping
+     crs/                  the Core Rule Set release
+       crs-setup.conf      from crs-setup.conf.example
+       plugins/
+       rules/
+
+#. Download a Core Rule Set release from `coreruleset.org
+   <https://coreruleset.org>`_ and extract it. Move or link the extracted
+   directory to ``modsecurity/crs``, and copy ``crs/crs-setup.conf.example`` to
+   ``crs/crs-setup.conf``.
+
+#. Fetch the two ModSecurity files from the release tag that matches the
+   installed libmodsecurity, ``v3.0.14`` for libmodsecurity 3.0.14, so that the
+   base configuration only uses directives that version understands::
+
+      cd modsecurity
+      curl -L -o modsecurity.conf https://raw.githubusercontent.com/owasp-modsecurity/ModSecurity/v3.0.14/modsecurity.conf-recommended
+      curl -L -O https://raw.githubusercontent.com/owasp-modsecurity/ModSecurity/v3.0.14/unicode.mapping
+
+#. Edit ``modsecurity.conf``:
+
+   - Set ``SecRuleEngine On``. The recommended file sets ``DetectionOnly``,
+     which only logs: nothing is blocked.
+   - Point ``SecAuditLog`` at a file the |TS| user can write, or set
+     ``SecAuditEngine Off``. The default, ``/var/log/modsec_audit.log``, is
+     usually not writable by that user, and the rules load regardless, so
+     nothing reports the problem at startup.
+
+   Leave ``unicode.mapping`` next to ``modsecurity.conf`` under that name.
+   ``SecUnicodeMapFile unicode.mapping 20127`` refers to it, and a missing file
+   fails the whole load, so a copy named ``unicode.mapping.dist`` must be
+   renamed.
+
+#. Copy ``owasp.conf`` from the plugin's source directory to
+   ``modsecurity/crs.conf``. It includes the files in the order the Core Rule
+   Set expects::
+
+      Include "modsecurity.conf"
+      Include "crs/crs-setup.conf"
+      Include "crs/plugins/*-config.conf"
+      Include "crs/plugins/*-before.conf"
+      Include "crs/rules/*.conf"
+      Include "crs/plugins/*-after.conf"
+
+#. Load it as a global plugin, a remap plugin, or both, and restart |TS|::
+
+      # plugin.config
+      modsecurity.so modsecurity/crs.conf
+
+      # remap.config
+      map http://example.com/ http://origin/ @plugin=modsecurity.so @pparam=modsecurity/crs.conf
+
+#. Check that attacks are blocked. A request carrying a scanner's user agent is
+   answered with a 403, and the block is recorded in the audit log. With |TS|
+   listening on its default port, 8080::
+
+      curl -o /dev/null -w '%{http_code}\n' -H 'Host: example.com' -H 'User-Agent: Nikto' http://127.0.0.1:8080/
+
+The request and response body settings in ``modsecurity.conf`` have no effect,
+because the plugin never passes bodies to ModSecurity.
+
+The Core Rule Set's own installation guide includes its plugin files with
+``IncludeOptional``, which libmodsecurity does not support, hence the plain
+``Include`` lines in ``crs.conf``. Because a pattern that matches no file fails
+the load, keep the empty ``*-config.conf``, ``*-before.conf`` and
+``*-after.conf`` files that ship in ``plugins/``, or drop the corresponding
+lines.
+
+With libmodsecurity 3.0.14 and Core Rule Set 4.29.0, this setup loads 847 rules.
+
+Using both modes
+================
+
+The global plugin and remap instances can run together. This lets one set of
+rules protect everything the proxy serves, while endpoints that need more get
+their own rules on top, without repeating the baseline for each of them. Load
+the system-wide baseline globally, such as the OWASP Core Rule Set, and add the
+rules that only concern particular endpoints on the remap rules for those
+endpoints::
+
+   # plugin.config
+   modsecurity.so modsecurity/baseline.conf
+
+   # remap.config
+   map http://api.example.com/ http://origin/ @plugin=modsecurity.so @pparam=modsecurity/api.conf
+
+A transaction that matches such a remap rule is inspected by both instances,
+each running its own ModSecurity transaction against its own rule set. The
+global plugin inspects the request first, against the URL the client sent. The
+remap instance only runs if the global plugin has not blocked the request, and
+it sees the URL as rewritten by its remap rule. Both instances inspect the
+response.
+
+Whichever instance blocks the transaction first decides the response. The other
+instance leaves that response alone: it neither runs its response rules on it
+nor counts it in the statistics. Each instance logs the rules that matched in
+its own transaction.
+
+Keep in mind:
+
+- A remap instance can only add to what the global plugin enforces. Directives
+  in its rule files, ``SecRuleRemoveById`` included, affect only its own rule
+  set, so they cannot exempt an endpoint from a rule the global plugin loads. To
+  exempt some endpoints from a rule, load that rule through the remap rules of
+  the other endpoints rather than globally.
+- Every matching transaction is evaluated against both rule sets. Keep the
+  remap rule files to what is specific to the endpoint: repeating the baseline
+  there would evaluate it twice.
+- Each instance loads and reloads its rule files on its own, as described in
+  the next section.
 
 Loading and reloading rules
 ===========================
@@ -136,26 +262,27 @@ started with.
 What is inspected
 =================
 
-.. warning::
-
-   Response phase rules (phases 3 and 4) run only on responses fetched from the
-   origin. A response served from the cache never reaches
-   ``TS_HTTP_READ_RESPONSE_HDR_HOOK``, so on a cache hit the response rules do
-   not run at all, and nothing records that they were skipped. On a proxy that
-   serves most requests from its cache, most responses are never inspected by
-   these rules. Request phase rules run on every transaction, in both modes.
-
 The plugin runs the ModSecurity phases that do not need a message body. As a
 global plugin it uses these hooks:
 
-==================================  ==============================================
+==================================  ===================================================
 |TS| hook                           ModSecurity processing
-==================================  ==============================================
+==================================  ===================================================
 ``TS_HTTP_READ_REQUEST_HDR_HOOK``   connection, URI, request headers (phases 1, 2)
-``TS_HTTP_READ_RESPONSE_HDR_HOOK``  response headers (phases 3, 4)
-``TS_HTTP_SEND_RESPONSE_HDR_HOOK``  adds the ``Location`` header of a redirect
+``TS_HTTP_READ_RESPONSE_HDR_HOOK``  headers of an origin response (phases 3, 4)
+``TS_HTTP_SEND_RESPONSE_HDR_HOOK``  headers of any other response (phases 3, 4)
 ``TS_HTTP_TXN_CLOSE_HOOK``          ModSecurity logging and cleanup
-==================================  ==============================================
+==================================  ===================================================
+
+Response phase rules run on every response. A response fetched from the origin
+is inspected as soon as its headers arrive, so a response the rules block is
+never written to the cache. Any other response, such as one served from the
+cache or an error response generated by |TS|, is inspected just before it is
+sent, using the headers |TS| is about to send. Those can include headers |TS|
+adds itself, such as ``Age``, so a rule may see slightly different headers on a
+cache hit than on an origin fetch. This adds response inspection to every cache
+hit. ``TS_HTTP_SEND_RESPONSE_HDR_HOOK`` also puts the status and the
+``Location`` header of an intervention in place.
 
 A remap instance runs the request phases from ``TSRemapDoRemap`` instead of
 ``TS_HTTP_READ_REQUEST_HDR_HOOK``, and therefore sees the URL as rewritten by
@@ -170,14 +297,24 @@ arrived on, so rules on ``REMOTE_ADDR``, ``REMOTE_PORT``, ``SERVER_ADDR`` and
 Interventions
 =============
 
-In both modes, when ModSecurity asks for an intervention:
+In both modes, when ModSecurity reports a disruptive intervention, such as one
+from ``deny``, ``drop`` or ``redirect``:
 
-- A status other than 200 aborts the transaction and |TS| returns that status
-  with a short ``text/plain`` body. Interventions on the response side replace
-  the origin response.
+- The transaction is aborted and |TS| returns the intervention's status with a
+  short ``text/plain`` body. Interventions on the response side replace the
+  origin response. An intervention without a status of 300 or above responds
+  with 403, or with 302 for a redirect.
 - A ``redirect`` action additionally sets the ``Location`` header on the
-  response sent to the client. A redirect that does not set a status, or sets
-  it to 200, responds with 302.
+  response sent to the client.
+- A response that was not fetched from the origin, such as a cache hit, cannot
+  be redirected: at that point |TS| can only abort it with a status of 400 or
+  above. An intervention on such a response with a lower status, which includes
+  every redirect, responds with 403 instead, and nothing from the cached
+  response is sent.
+
+Rules whose actions do not disrupt, such as ``pass`` and ``allow``, never block
+a transaction, and neither does any rule while ``SecRuleEngine`` is set to
+``DetectionOnly``. Those only log.
 
 Macros in a ``redirect`` target expand to *decoded* request data, so a rule
 such as ``redirect:'https://blocked.example.com/?u=%{REQUEST_URI}'`` puts bytes
@@ -190,16 +327,16 @@ dropped. Prefer static redirect targets regardless.
 Statistics
 ==========
 
-The plugin counts the transactions it blocks: every intervention that carries
-a status other than 200 or a redirect.
+The plugin counts the transactions it blocks: every disruptive intervention.
 
 ``proxy.process.plugin.modsecurity.interventions.request``
    Transactions blocked by the request phase rules (phases 1 and 2). These
    never reach the origin.
 
 ``proxy.process.plugin.modsecurity.interventions.response``
-   Transactions blocked by the response phase rules (phases 3 and 4). The
-   origin response is replaced.
+   Transactions blocked by the response phase rules (phases 3 and 4), whether
+   the response came from the origin or from the cache. The response is
+   replaced.
 
 ``proxy.process.plugin.modsecurity.redirects_dropped``
    Redirect targets discarded because they contained a control character, as
@@ -234,8 +371,10 @@ These apply to both modes.
 - ``RESPONSE_BODY`` is not inspected. The body would have to be decompressed
   first, which is expensive in a proxy. See
   `ModSecurity issue 2494 <https://github.com/SpiderLabs/ModSecurity/issues/2494>`_.
-- Response phase rules do not run on cache hits. See the warning under
-  What is inspected.
+- The ``pause`` action is not supported. libmodsecurity 3.0.14 refuses to load
+  a rule file that uses it, which then fails like any other rule file that does
+  not parse. Should a later version accept it, the plugin logs a warning once
+  and ignores the pause.
 
 Rules that depend on either body can never match. When running the OWASP Core
 Rule Set they are best disabled with ``SecRuleRemoveById`` so that they are not
