@@ -73,7 +73,7 @@ EventIO::start_common(EventLoop l, int afd, int e)
 #ifndef USE_EDGE_TRIGGER
   events = e;
 #endif
-  return epoll_ctl(event_loop->epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+  return epoll_ctl(l->epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 #endif
 #if TS_USE_KQUEUE
   events = e;
