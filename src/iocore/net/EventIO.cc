@@ -65,7 +65,14 @@ EventIO::modify(int e)
     return 0;
   }
 
-  ink_assert(event_loop);
+  // Another thread can stop this EventIO to migrate the connection while the owning thread is
+  // still processing it, see UnixNetVConnection::detachForMigration. Read the event loop once
+  // so a concurrent stop cannot clear it between the check and the use.
+  EventLoop loop = event_loop;
+
+  if (!loop) {
+    return 0;
+  }
 #if TS_USE_EPOLL && !defined(USE_EDGE_TRIGGER)
   struct epoll_event ev;
   memset(&ev, 0, sizeof(ev));
@@ -78,11 +85,11 @@ EventIO::modify(int e)
   ev.events   = new_events;
   ev.data.ptr = this;
   if (!new_events)
-    return epoll_ctl(event_loop->epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+    return epoll_ctl(loop->epoll_fd, EPOLL_CTL_DEL, fd, &ev);
   else if (!old_events)
-    return epoll_ctl(event_loop->epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+    return epoll_ctl(loop->epoll_fd, EPOLL_CTL_ADD, fd, &ev);
   else
-    return epoll_ctl(event_loop->epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+    return epoll_ctl(loop->epoll_fd, EPOLL_CTL_MOD, fd, &ev);
 #endif
 #if TS_USE_KQUEUE && !defined(USE_EDGE_TRIGGER)
   int           n = 0;
@@ -103,7 +110,7 @@ EventIO::modify(int e)
   }
   events = ee;
   if (n)
-    return kevent(event_loop->kqueue_fd, &ev[0], n, nullptr, 0, nullptr);
+    return kevent(loop->kqueue_fd, &ev[0], n, nullptr, 0, nullptr);
   else
     return 0;
 #endif
@@ -118,7 +125,14 @@ EventIO::refresh(int e)
     return 0;
   }
 
-  ink_assert(event_loop);
+  // Another thread can stop this EventIO to migrate the connection while the owning thread is
+  // still processing it, see UnixNetVConnection::detachForMigration. Read the event loop once
+  // so a concurrent stop cannot clear it between the check and the use.
+  EventLoop loop = event_loop;
+
+  if (!loop) {
+    return 0;
+  }
 #if TS_USE_KQUEUE && defined(USE_EDGE_TRIGGER)
   e = e & events;
   struct kevent ev[2];
@@ -130,7 +144,7 @@ EventIO::refresh(int e)
     EV_SET(&ev[n++], fd, EVFILT_WRITE, EV_ADD | INK_EV_EDGE_TRIGGER, 0, 0, this);
   }
   if (n) {
-    return kevent(event_loop->kqueue_fd, &ev[0], n, nullptr, 0, nullptr);
+    return kevent(loop->kqueue_fd, &ev[0], n, nullptr, 0, nullptr);
   } else {
     return 0;
   }

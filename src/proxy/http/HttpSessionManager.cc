@@ -40,6 +40,7 @@
 #include "iocore/net/TLSSNISupport.h"
 #include "ts/ats_probe.h"
 #include <iterator>
+#include <optional>
 
 namespace
 {
@@ -480,14 +481,16 @@ HSMresult_t
 HttpSessionManager::_acquire_session(sockaddr const *ip, CryptoHash const &hostname_hash, HttpSM *sm,
                                      TSServerSessionSharingMatchMask match_style, TSServerSessionSharingPoolType pool_type)
 {
-  PoolableSession    *to_return = nullptr;
-  HSMresult_t         retval    = HSMresult_t::NOT_FOUND;
-  UnixNetVConnection *server_vc = nullptr;
-  EThread *const      ethread   = this_ethread();
+  PoolableSession                                  *to_return = nullptr;
+  HSMresult_t                                       retval    = HSMresult_t::NOT_FOUND;
+  EThread                                          *ethread   = this_ethread();
+  std::optional<UnixNetVConnection::MigrationState> migration;
 
-  // Extend the mutex window until the acquired Server session is attached
-  // to the SM. Releasing the mutex before that results in race conditions
-  // due to a potential parallel network read on the VC with no mutex guarding
+  // Only the pool search and the hand off of the session's VC need the pool
+  // mutex. A pooled VC uses the pool mutex for its VIOs, so holding it keeps
+  // the VC's thread from processing the VC. Once the session is out of the
+  // pool and its VC is closed or owned by this thread nothing else can reach
+  // either of them.
   {
     // Now check to see if we have a connection in our shared connection pool
     Ptr<ProxyMutex> pool_mutex =
@@ -495,56 +498,53 @@ HttpSessionManager::_acquire_session(sockaddr const *ip, CryptoHash const &hostn
 
     MutexLock    mlock;
     MutexTryLock tlock;
-    bool const   locked = lockSessionPool(pool_mutex, ethread, pool_type, &mlock, &tlock);
 
-    if (locked) {
-      if (TS_SERVER_SESSION_SHARING_POOL_THREAD == pool_type) {
-        retval = ethread->server_session_pool->acquireSession(ip, hostname_hash, match_style, sm, to_return);
-        Dbg(dbg_ctl_http_ss, "[acquire session] thread pool search %s", to_return ? "successful" : "failed");
-      } else {
-        retval = m_g_pool->acquireSession(ip, hostname_hash, match_style, sm, to_return);
-        Dbg(dbg_ctl_http_ss, "[acquire session] global pool search %s", to_return ? "successful" : "failed");
+    if (!lockSessionPool(pool_mutex, ethread, pool_type, &mlock, &tlock)) {
+      return HSMresult_t::RETRY;
+    }
 
-        // At this point to_return has been removed from the pool.
-        // Do we need to move it to the same thread?
-        if (nullptr != to_return) {
-          server_vc = dynamic_cast<UnixNetVConnection *>(to_return->get_netvc());
-          if (nullptr != server_vc) {
-            // Disable i/o on this vc
-            server_vc->do_io_read(m_g_pool, 0, nullptr);
-            server_vc->do_io_write(m_g_pool, 0, nullptr);
+    if (TS_SERVER_SESSION_SHARING_POOL_THREAD == pool_type) {
+      retval = ethread->server_session_pool->acquireSession(ip, hostname_hash, match_style, sm, to_return);
+      Dbg(dbg_ctl_http_ss, "[acquire session] thread pool search %s", to_return ? "successful" : "failed");
+    } else {
+      retval = m_g_pool->acquireSession(ip, hostname_hash, match_style, sm, to_return);
+      Dbg(dbg_ctl_http_ss, "[acquire session] global pool search %s", to_return ? "successful" : "failed");
+      // At this point to_return has been removed from the pool. Do we need to move it
+      // to the same thread?
+      if (to_return) {
+        if (auto *server_vc = dynamic_cast<UnixNetVConnection *>(to_return->get_netvc()); server_vc != nullptr) {
+          // Disable i/o on this vc now, but, hold onto the g_pool cont
+          // and the mutex to stop any stray events from getting in
+          server_vc->do_io_read(m_g_pool, 0, nullptr);
+          server_vc->do_io_write(m_g_pool, 0, nullptr);
+          if (server_vc->get_thread() == ethread) {
+            // Keep things from timing out on us
+            server_vc->set_inactivity_timeout(server_vc->get_inactivity_timeout());
+          } else {
+            // The original VC must be marked closed while the pool mutex is held, its
+            // thread depends on the closed flag being stable under the VIO mutex.
+            server_vc->detachForMigration(migration.emplace());
           }
         }
       }
-    } else {
-      retval = HSMresult_t::RETRY;
-      return retval;
     }
   }
 
-  if (TS_SERVER_SESSION_SHARING_POOL_THREAD != pool_type && nullptr != to_return && nullptr != server_vc) {
-    UnixNetVConnection *new_vc = server_vc->migrateToCurrentThread(sm, ethread);
-    // The VC moved, free up the original one
-    if (new_vc != server_vc) {
-      ink_assert(new_vc == nullptr || new_vc->nh != nullptr);
-      if (!new_vc) {
-        // Close out to_return, we were't able to get a connection
-        Metrics::Counter::increment(http_rsb.origin_shutdown_migration_failure);
-        to_return->do_io_close();
-        to_return = nullptr;
-        retval    = HSMresult_t::NOT_FOUND;
-      } else {
-        // Keep things from timing out on us
-        new_vc->set_inactivity_timeout(new_vc->get_inactivity_timeout());
-        to_return->set_netvc(new_vc);
-      }
-    } else {
-      // Keep things from timing out on us
-      server_vc->set_inactivity_timeout(server_vc->get_inactivity_timeout());
+  if (migration) {
+    UnixNetVConnection *new_vc = UnixNetVConnection::attachMigrated(*migration, sm, ethread);
+
+    // The original VC was closed by the detach and may already be freed.
+    to_return->set_netvc(new_vc);
+    if (!new_vc) {
+      // Close out to_return, we weren't able to get a connection
+      Metrics::Counter::increment(http_rsb.origin_shutdown_migration_failure);
+      to_return->do_io_close();
+      to_return = nullptr;
+      retval    = HSMresult_t::NOT_FOUND;
     }
   }
 
-  if (nullptr != to_return) {
+  if (to_return) {
     if (sm->create_server_txn(to_return)) {
       Dbg(dbg_ctl_http_ss, "[%" PRId64 "] [acquire session] return session from shared pool", to_return->connection_id());
       ATS_PROBE2(http_ss_acquire_session, to_return->connection_id(), to_return->get_netvc()->get_socket());
