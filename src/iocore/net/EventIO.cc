@@ -25,6 +25,37 @@
 #include "tscore/ink_assert.h"
 #include "P_UnixPollDescriptor.h"
 
+#include <cerrno>
+
+#if TS_USE_KQUEUE
+namespace
+{
+int
+delete_kqueue_filters(EventLoop loop, int fd, int events)
+{
+  int result = 0;
+
+  if (events & EVENTIO_READ) {
+    struct kevent ev;
+
+    EV_SET(&ev, fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
+    if (kevent(loop->kqueue_fd, &ev, 1, nullptr, 0, nullptr) < 0 && errno != ENOENT) {
+      result = -1;
+    }
+  }
+  if (events & EVENTIO_WRITE) {
+    struct kevent ev;
+
+    EV_SET(&ev, fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
+    if (kevent(loop->kqueue_fd, &ev, 1, nullptr, 0, nullptr) < 0 && errno != ENOENT) {
+      result = -1;
+    }
+  }
+  return result;
+}
+} // namespace
+#endif
+
 int
 EventIO::start_common(EventLoop l, int afd, int e)
 {
@@ -109,10 +140,11 @@ EventIO::modify(int e)
       EV_SET(&ev[n++], fd, EVFILT_WRITE, EV_ADD | INK_EV_EDGE_TRIGGER, 0, 0, this);
   }
   events = ee;
-  if (n)
+  if (n) {
     return kevent(loop->kqueue_fd, &ev[0], n, nullptr, 0, nullptr);
-  else
+  } else {
     return 0;
+  }
 #endif
   (void)e; // ATS_UNUSED
   return 0;
@@ -144,7 +176,13 @@ EventIO::refresh(int e)
     EV_SET(&ev[n++], fd, EVFILT_WRITE, EV_ADD | INK_EV_EDGE_TRIGGER, 0, 0, this);
   }
   if (n) {
-    return kevent(loop->kqueue_fd, &ev[0], n, nullptr, 0, nullptr);
+    int result = kevent(loop->kqueue_fd, &ev[0], n, nullptr, 0, nullptr);
+
+    // A concurrent migration may have removed the old registration during the add.
+    if (event_loop.load() != loop && delete_kqueue_filters(loop, fd, e) < 0) {
+      return -1;
+    }
+    return result;
   } else {
     return 0;
   }
@@ -159,16 +197,33 @@ EventIO::stop()
   if (!this->syscall) {
     return 0;
   }
-  if (event_loop) {
+  if (EventLoop loop = event_loop.exchange(nullptr)) {
     int retval = 0;
 #if TS_USE_EPOLL
     struct epoll_event ev;
     memset(&ev, 0, sizeof(struct epoll_event));
     ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
-    retval    = epoll_ctl(event_loop->epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+    retval    = epoll_ctl(loop->epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+#else
+    (void)loop;
 #endif
-    event_loop = nullptr;
     return retval;
   }
   return 0;
+}
+
+int
+EventIO::stop_for_migration()
+{
+#if TS_USE_KQUEUE
+  if (!this->syscall) {
+    return 0;
+  }
+  if (EventLoop loop = event_loop.exchange(nullptr)) {
+    return delete_kqueue_filters(loop, fd, events);
+  }
+  return 0;
+#else
+  return stop();
+#endif
 }

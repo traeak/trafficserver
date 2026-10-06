@@ -1325,7 +1325,7 @@ UnixNetVConnection::detachForMigration(MigrationState &ms)
 
   // Do_io_close will signal the VC to be freed on the original thread
   // Since we moved the con context, the fd will not be closed
-  // Go ahead and remove the fd from the original thread's epoll structure, so it is not
+  // Go ahead and remove the fd from the original thread's poller, so it is not
   // processed on two threads simultaneously
   //
   // This stop is not synchronized with the original thread. That thread may have already seen
@@ -1335,10 +1335,9 @@ UnixNetVConnection::detachForMigration(MigrationState &ms)
   // EventIO::refresh do nothing on a stopped EventIO. A delay before the try lock in net_read_io
   // makes the original thread hit this reliably.
   //
-  // KNOWN ISSUE: with kqueue EventIO::stop does not remove the registration, that only happens
-  // when the fd is closed. The fd stays open across a migration, so the original thread's kqueue
-  // keeps a registration that refers to this VC.
-  this->ep.stop();
+  // Unlike an ordinary close, migration keeps the fd open, so kqueue registrations must
+  // also be removed here before the old VC can be freed.
+  ink_release_assert(this->ep.stop_for_migration() == 0);
 
   // Do not mark this closed until the end so it does not get freed by the other thread too soon
   this->do_io_close();
