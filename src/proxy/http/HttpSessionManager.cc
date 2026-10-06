@@ -77,6 +77,7 @@ ServerSessionPool::purge()
 {
   // @c do_io_close can free the instance which clears the intrusive links and breaks the iterator.
   // Therefore @c do_io_close is called on a post-incremented iterator.
+  Metrics::Gauge::decrement(http_rsb.pooled_server_connections, m_ip_pool.count());
   m_ip_pool.apply([](PoolableSession *ssn) -> void { ssn->do_io_close(); });
   m_ip_pool.clear();
   m_fqdn_pool.clear();
