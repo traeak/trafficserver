@@ -36,6 +36,8 @@
 #include "proxy/PoolableSession.h"
 #include "swoc/IntrusiveHashMap.h"
 
+#include <vector>
+
 class ProxyTransaction;
 class HttpSM;
 
@@ -104,10 +106,23 @@ public:
   /// Close all sessions and then clear the table.
   void purge();
 
+  /** Close a session from an event on the current thread.
+
+      This is for closing a session while a shared pool is locked. The session must already be out
+      of the pool and this must be the pool of the thread that owns the session.
+   */
+  void deferClose(PoolableSession *ssn);
+
   // Pools of server sessions.
   // Note that each server session is stored in both pools.
   IPTable   m_ip_pool;
   FQDNTable m_fqdn_pool;
+
+private:
+  void closeDeferred();
+
+  /// Sessions waiting to be closed by this pool's thread.
+  std::vector<PoolableSession *> m_deferred_close;
 };
 
 class HttpSessionManager

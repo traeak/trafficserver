@@ -30,6 +30,7 @@
 
  ****************************************************************************/
 
+#include "../../iocore/net/P_UnixNet.h"
 #include "../../iocore/net/P_UnixNetVConnection.h"
 #include "../../iocore/net/P_SSLClientUtils.h"
 #include "proxy/http/HttpSessionManager.h"
@@ -286,6 +287,10 @@ ServerSessionPool::eventHandler(int event, void *data)
   PoolableSession *s      = nullptr;
 
   switch (event) {
+  case EVENT_IMMEDIATE:
+    this->closeDeferred();
+    return 0;
+
   case VC_EVENT_READ_READY:
   // The server sent us data.  This is unexpected so
   //   close the connection
@@ -334,8 +339,13 @@ ServerSessionPool::eventHandler(int event, void *data)
       ink_assert(s->state == PoolableSession::PooledState::KA_POOLED);
       // Out of the pool! Now!
       this->removeSession(s);
-      // Drop connection on this end.
-      s->do_io_close();
+      // Drop connection on this end. The caller holds the pool lock, which the close does not need,
+      // so for a shared pool leave the close until the lock is released.
+      if (ServerSessionPool *thread_pool = this_ethread()->server_session_pool; thread_pool != nullptr && thread_pool != this) {
+        thread_pool->deferClose(s);
+      } else {
+        s->do_io_close();
+      }
       found = true;
       break;
     }
@@ -355,6 +365,40 @@ ServerSessionPool::eventHandler(int event, void *data)
     ink_assert(0);
   }
   return 0;
+}
+
+void
+ServerSessionPool::deferClose(PoolableSession *ssn)
+{
+  // The session is not tracked by a pool anymore, so nothing can be allowed to fire on it before
+  // it is closed.
+  ssn->do_io_read(nullptr, 0, nullptr);
+  ssn->do_io_write(nullptr, 0, nullptr);
+  ssn->cancel_inactivity_timeout();
+  ssn->cancel_active_timeout();
+
+  if (m_deferred_close.empty()) {
+    this_ethread()->schedule_imm_local(this);
+  }
+  m_deferred_close.push_back(ssn);
+}
+
+void
+ServerSessionPool::closeDeferred()
+{
+  EThread *ethread = this_ethread();
+  // Closing a session can run plugin hooks, so take the list in case that ends up adding to it.
+  std::vector<PoolableSession *> sessions;
+
+  sessions.swap(m_deferred_close);
+
+  // With the net handler locked the VCs are freed right away, otherwise that waits for the
+  // inactivity cop.
+  MUTEX_TRY_LOCK(lock, get_NetHandler(ethread)->mutex, ethread);
+
+  for (PoolableSession *ssn : sessions) {
+    ssn->do_io_close();
+  }
 }
 
 void
@@ -572,6 +616,7 @@ HttpSessionManager::release_session(PoolableSession *to_release)
   ServerSessionPool *pool =
     TS_SERVER_SESSION_SHARING_POOL_THREAD == to_release->sharing_pool ? ethread->server_session_pool : m_g_pool;
   bool released_p = true;
+  bool pooled     = true;
 
   // The per thread lock looks like it should not be needed but if it's not locked the close checking I/O op will crash.
 
@@ -581,12 +626,8 @@ HttpSessionManager::release_session(PoolableSession *to_release)
     bool const   locked = lockSessionPool(pool->mutex, ethread, this->get_pool_type(), &mlock, &tlock);
 
     if (locked) {
-      bool const pooled = pool->releaseSession(to_release);
+      pooled = pool->releaseSession(to_release);
       ATS_PROBE3(http_ss_release_session_global, to_release->connection_id(), to_release->get_netvc()->get_socket(), pooled);
-      if (!pooled) {
-        // close & free session
-        to_release->do_io_close();
-      }
     } else if (this->get_pool_type() == TS_SERVER_SESSION_SHARING_POOL_HYBRID) {
       // Try again with the thread pool
       to_release->sharing_pool = TS_SERVER_SESSION_SHARING_POOL_THREAD;
@@ -598,6 +639,12 @@ HttpSessionManager::release_session(PoolableSession *to_release)
       ATS_PROBE2(http_ss_release_lock_contended, to_release->connection_id(), to_release->get_netvc()->get_socket());
       released_p = false;
     }
+  }
+
+  // A session that was not pooled was never visible to the pool, so it does not need the pool lock to close.
+  if (!pooled) {
+    // close & free session
+    to_release->do_io_close();
   }
 
   return released_p ? HSMresult_t::DONE : HSMresult_t::RETRY;
