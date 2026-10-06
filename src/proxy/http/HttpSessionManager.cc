@@ -73,14 +73,39 @@ ServerSessionPool::ServerSessionPool() : Continuation(new_ProxyMutex()), m_ip_po
 }
 
 void
-ServerSessionPool::purge()
+ServerSessionPool::requestPurge(EThread *thread)
 {
-  // @c do_io_close can free the instance which clears the intrusive links and breaks the iterator.
-  // Therefore @c do_io_close is called on a post-incremented iterator.
-  Metrics::Gauge::decrement(http_rsb.pooled_server_connections, m_ip_pool.count());
-  m_ip_pool.apply([](PoolableSession *ssn) -> void { ssn->do_io_close(); });
-  m_ip_pool.clear();
-  m_fqdn_pool.clear();
+  // This is called for every request once the connection limit is reached, so only schedule one event.
+  if (!m_purge_requested.load(std::memory_order_relaxed) && !m_purge_requested.exchange(true)) {
+    thread->schedule_imm(this);
+  }
+}
+
+void
+ServerSessionPool::removeSessionsOf(EThread *thread, std::vector<PoolableSession *> &sessions)
+{
+  for (PoolableSession &ssn : m_ip_pool) {
+    if (NetVConnection *vc = ssn.get_netvc(); vc != nullptr && vc->thread == thread) {
+      sessions.push_back(&ssn);
+    }
+  }
+  for (PoolableSession *ssn : sessions) {
+    this->removeSession(ssn);
+  }
+}
+
+void
+ServerSessionPool::closeSessions(std::vector<PoolableSession *> const &sessions)
+{
+  EThread *ethread = this_ethread();
+
+  // With the net handler locked the VCs are freed right away, otherwise that waits for the
+  // inactivity cop.
+  MUTEX_TRY_LOCK(lock, get_NetHandler(ethread)->mutex, ethread);
+
+  for (PoolableSession *ssn : sessions) {
+    ssn->do_io_close();
+  }
 }
 
 bool
@@ -289,6 +314,13 @@ ServerSessionPool::eventHandler(int event, void *data)
 
   switch (event) {
   case EVENT_IMMEDIATE:
+  case EVENT_INTERVAL:
+    if (m_purge_requested.exchange(false) && !httpSessionManager.purge_thread_keepalives()) {
+      // The shared pool is busy, try again shortly.
+      if (!m_purge_requested.exchange(true)) {
+        this_ethread()->schedule_in_local(this, HRTIME_MSECONDS(10));
+      }
+    }
     this->closeDeferred();
     return 0;
 
@@ -387,19 +419,11 @@ ServerSessionPool::deferClose(PoolableSession *ssn)
 void
 ServerSessionPool::closeDeferred()
 {
-  EThread *ethread = this_ethread();
   // Closing a session can run plugin hooks, so take the list in case that ends up adding to it.
   std::vector<PoolableSession *> sessions;
 
   sessions.swap(m_deferred_close);
-
-  // With the net handler locked the VCs are freed right away, otherwise that waits for the
-  // inactivity cop.
-  MUTEX_TRY_LOCK(lock, get_NetHandler(ethread)->mutex, ethread);
-
-  for (PoolableSession *ssn : sessions) {
-    ssn->do_io_close();
-  }
+  closeSessions(sessions);
 }
 
 void
@@ -409,17 +433,39 @@ HttpSessionManager::init()
   eventProcessor.schedule_spawn(&initialize_thread_for_http_sessions, ET_NET);
 }
 
-// TODO: Should this really purge all keep-alive sessions?
-// Does this make any sense, since we always do the global pool and not the per thread?
+// Only the shared pool is purged, not the per thread pools.
+//
+// A session is closed by the thread that owns its connection, so this asks every thread to close
+// its own. That keeps the closes out of the pool lock and away from other threads' connections.
 void
 HttpSessionManager::purge_keepalives()
 {
-  EThread *ethread = this_ethread();
+  auto const &group = eventProcessor.thread_group[ET_NET];
 
-  MUTEX_TRY_LOCK(lock, m_g_pool->mutex, ethread);
-  if (lock.is_locked()) {
-    m_g_pool->purge();
-  } // should we do something clever if we don't get the lock?
+  for (int i = 0; i < group._count; ++i) {
+    if (EThread *thread = group._thread[i]; thread != nullptr && thread->server_session_pool != nullptr) {
+      thread->server_session_pool->requestPurge(thread);
+    }
+  }
+}
+
+bool
+HttpSessionManager::purge_thread_keepalives()
+{
+  EThread                       *ethread = this_ethread();
+  std::vector<PoolableSession *> sessions;
+
+  {
+    MUTEX_TRY_LOCK(lock, m_g_pool->mutex, ethread);
+    if (!lock.is_locked()) {
+      return false;
+    }
+    m_g_pool->removeSessionsOf(ethread, sessions);
+  }
+
+  Dbg(dbg_ctl_http_ss, "[purge keepalives] closing %zu sessions owned by this thread", sessions.size());
+  ServerSessionPool::closeSessions(sessions);
+  return true;
 }
 
 HSMresult_t

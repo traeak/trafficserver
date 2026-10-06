@@ -36,6 +36,7 @@
 #include "proxy/PoolableSession.h"
 #include "swoc/IntrusiveHashMap.h"
 
+#include <atomic>
 #include <vector>
 
 class ProxyTransaction;
@@ -103,8 +104,22 @@ public:
    */
   bool releaseSession(PoolableSession *ss);
 
-  /// Close all sessions and then clear the table.
-  void purge();
+  /** Ask the thread that owns this pool to close its sessions in the shared pool.
+
+      This can be called from any thread.
+
+      @param thread The thread that owns this pool.
+   */
+  void requestPurge(EThread *thread);
+
+  /** Remove the sessions whose connections belong to @a thread.
+
+      The caller must hold the pool lock and is responsible for closing the sessions.
+   */
+  void removeSessionsOf(EThread *thread, std::vector<PoolableSession *> &sessions);
+
+  /// Close sessions whose connections belong to the current thread.
+  static void closeSessions(std::vector<PoolableSession *> const &sessions);
 
   /** Close a session from an event on the current thread.
 
@@ -123,6 +138,8 @@ private:
 
   /// Sessions waiting to be closed by this pool's thread.
   std::vector<PoolableSession *> m_deferred_close;
+  /// Set while this pool's thread has been asked to purge and has not yet done so.
+  std::atomic<bool> m_purge_requested{false};
 };
 
 class HttpSessionManager
@@ -132,9 +149,15 @@ public:
   ~HttpSessionManager() {}
   HSMresult_t acquire_session(HttpSM *sm, sockaddr const *addr, const char *hostname, ProxyTransaction *ua_txn);
   HSMresult_t release_session(PoolableSession *to_release);
-  void        purge_keepalives();
-  void        init();
-  int         main_handler(int event, void *data);
+  /// Close the keep-alive sessions in the shared pool. Each thread closes its own, so this returns before they are closed.
+  void purge_keepalives();
+  /** Close the shared pool sessions whose connections belong to the current thread.
+
+      @return @c false if the shared pool was locked by another thread and nothing was done.
+   */
+  bool purge_thread_keepalives();
+  void init();
+  int  main_handler(int event, void *data);
   void
   set_pool_type(int pool_type)
   {
