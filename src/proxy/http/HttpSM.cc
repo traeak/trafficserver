@@ -278,6 +278,28 @@ HttpSM::get_server_connect_timeout()
   return retval;
 }
 
+// Unset, the wait stays on the inactivity timeout and its expiry is not counted as a response header timeout.
+void
+HttpSM::arm_server_response_header_timeout()
+{
+  ink_assert(server_txn != nullptr);
+
+  const MgmtInt timeout = t_state.txn_conf->server_response_header_timeout;
+
+  server_response_header_timeout_armed = timeout > 0;
+  server_txn->set_inactivity_timeout(server_response_header_timeout_armed ? HRTIME_SECONDS(timeout) :
+                                                                            get_server_inactivity_timeout());
+}
+
+void
+HttpSM::disarm_server_response_header_timeout()
+{
+  ink_assert(server_txn != nullptr);
+
+  server_txn->set_inactivity_timeout(get_server_inactivity_timeout());
+  server_response_header_timeout_armed = false;
+}
+
 HttpSM::HttpSM() : Continuation(nullptr), vc_table(this) {}
 
 HttpSM::~HttpSM()
@@ -2139,13 +2161,13 @@ HttpSM::state_read_server_response_header(int event, void *data)
 
   // Reset the inactivity timeout if this is the first
   //   time we've been called.  The timeout had been set to
-  //   the connect timeout when we set up to read the header
+  //   the response header timeout when we set up to read the header
   //
   if (server_response_hdr_bytes == 0) {
     ATS_PROBE1(milestone_server_first_read, sm_id);
     milestones[TS_MILESTONE_SERVER_FIRST_READ] = ink_get_hrtime();
 
-    server_txn->set_inactivity_timeout(get_server_inactivity_timeout());
+    disarm_server_response_header_timeout();
 
     // For requests that contain a body, we can cancel the ua inactivity timeout.
     if (_ua.get_txn() &&
@@ -3086,6 +3108,10 @@ HttpSM::tunnel_handler_post(int event, void *data)
 
       call_transact_and_set_next_state(HttpTransact::HandleRequestBufferDone);
       break;
+    }
+    // Skipped when the origin already started answering during the body upload.
+    if (server_txn != nullptr && server_response_hdr_bytes == 0) {
+      arm_server_response_header_timeout();
     }
     // Is the response header ready and waiting?
     // If so, go ahead and do the hook processing
@@ -6679,6 +6705,17 @@ HttpSM::handle_server_setup_error(int event, void *data)
 
   STATE_ENTER(handle_server_setup_error, event);
 
+  // A stall while the request is still being written is not a wait for the response.  Any event here ends
+  // the wait, so the flag is cleared for all of them.
+  if (event == VC_EVENT_INACTIVITY_TIMEOUT && server_response_header_timeout_armed) {
+    const VIO *write_vio = server_entry != nullptr ? server_entry->write_vio : nullptr;
+
+    if (write_vio == nullptr || write_vio->ntodo() <= 0) {
+      Metrics::Counter::increment(http_rsb.server_response_header_timeouts);
+    }
+  }
+  server_response_header_timeout_armed = false;
+
   // If there is POST or PUT tunnel wait for the tunnel
   //  to figure out that things have gone to hell
 
@@ -6826,6 +6863,9 @@ HttpSM::setup_transform_to_server_transfer()
   tunnel.add_consumer(server_entry->vc, post_transform_info.vc, &HttpSM::tunnel_handler_post_server, HttpTunnelType_t::HTTP_SERVER,
                       "http server post");
   server_entry->in_tunnel = true;
+
+  // The origin answers only after the transformed body, which arrives as fast as the client and transform allow.
+  disarm_server_response_header_timeout();
 
   tunnel.tunnel_run(p);
 }
@@ -7013,7 +7053,7 @@ HttpSM::do_setup_client_request_body_tunnel(HttpVC_t to_vc_type)
   }
 
   _ua.get_txn()->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_in));
-  server_txn->set_inactivity_timeout(get_server_inactivity_timeout());
+  disarm_server_response_header_timeout();
 
   tunnel.tunnel_run(p);
 
@@ -7338,10 +7378,7 @@ HttpSM::setup_server_send_request()
   milestones[TS_MILESTONE_SERVER_BEGIN_WRITE] = ink_get_hrtime();
   server_entry->write_vio                     = server_entry->vc->do_io_write(this, hdr_length, buf_start);
 
-  // Make sure the VC is using correct timeouts.  We may be reusing a previously used server session
-  server_txn->set_inactivity_timeout(get_server_inactivity_timeout());
-
-  // Go on and set up the read response header too
+  // Go on and set up the read response header too, which also sets the timeout on a reused session.
   setup_server_read_response_header();
 }
 
@@ -7373,6 +7410,9 @@ HttpSM::setup_server_read_response_header()
   http_parser_clear(&http_parser);
   server_response_hdr_bytes                        = 0;
   milestones[TS_MILESTONE_SERVER_READ_HEADER_DONE] = 0;
+
+  // Disarmed on the first response byte and while a request body is being sent.
+  arm_server_response_header_timeout();
 
   // The tunnel from OS to UA is now setup.  Ready to read the response
   server_entry->read_vio = server_txn->do_io_read(this, INT64_MAX, server_txn->get_remote_reader()->mbuf);

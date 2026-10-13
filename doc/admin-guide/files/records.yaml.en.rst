@@ -2253,6 +2253,44 @@ HTTP Connection Timeouts
 
    See :ref:`admin-performance-timeouts` for more discussion on |TS| timeouts.
 
+.. ts:cv:: CONFIG proxy.config.http.server_response_header_timeout INT 0
+   :reloadable:
+   :overridable:
+
+   Specifies how long, in seconds, |TS| waits for the first byte of the origin server's response
+   after it has sent the request. If the request has a body, the timeout starts once the body has
+   been sent. Once the first byte of the response arrives,
+   :ts:cv:`proxy.config.http.transaction_no_activity_timeout_out` applies for the rest of the
+   transaction. A value of ``0`` uses the origin inactivity timeout for this wait as well, that is
+   :ts:cv:`proxy.config.http.transaction_no_activity_timeout_out` or the value set by a plugin with
+   ``TSHttpTxnNoActivityTimeoutSet()``. A nonzero value takes precedence over
+   ``TSHttpTxnNoActivityTimeoutSet()`` for this wait; a plugin can override this setting itself with
+   :func:`TSHttpTxnConfigIntSet`.
+
+   The timeout is armed again after a ``1xx`` interim response, such as ``100 Continue``, while |TS|
+   waits for the final response.
+
+   This timeout applies to reused (pooled) origin connections as well as new ones, whereas
+   :ts:cv:`proxy.config.http.connect_attempts_timeout` only covers establishing a new connection.
+   Like an inactivity timeout, it is restarted by any activity on the transaction, such as writing
+   the request. On an HTTP/2 origin connection, activity on other streams does not restart it.
+
+   When this timeout fires, |TS| treats it as an origin connection failure: the request is retried
+   as controlled by :ts:cv:`proxy.config.http.connect_attempts_max_retries` (a request whose method
+   is not safe, such as ``POST``, is retried only if none of it had been written), the origin may be
+   marked down as controlled by :ts:cv:`proxy.config.http.connect.down.policy`, and once retries are
+   exhausted the client receives a ``504`` response, or a ``502`` response if none of the request
+   could be written. Setting this lower than a healthy origin's normal response time can therefore
+   mark that origin down. Each expiration after the whole request was written is counted in
+   :ts:stat:`proxy.process.http.server_response_header_timeouts`.
+
+   On an HTTP/2 origin connection, a stream that times out before any response header arrives also
+   retires the whole session: |TS| stops assigning new streams to it and closes it once its
+   remaining streams finish. A single slow request can therefore cost the other requests their
+   shared connection, so a short value here replaces HTTP/2 origin sessions more often.
+
+   See :ref:`admin-performance-timeouts` for more discussion on |TS| timeouts.
+
 .. ts:cv:: CONFIG proxy.config.websocket.no_activity_timeout INT 600
    :reloadable:
    :overridable:

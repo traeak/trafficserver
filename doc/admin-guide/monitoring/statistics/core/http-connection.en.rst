@@ -146,6 +146,14 @@ HTTP Connection
 .. ts:stat:: global proxy.process.http.total_server_connections integer
    :type: counter
 
+.. ts:stat:: global proxy.process.http.server_response_header_timeouts integer
+   :type: counter
+
+   Tracks the number of times :ts:cv:`proxy.config.http.server_response_header_timeout` expired after the
+   whole request had been written to the origin server and before the origin started its response. The
+   timeout is also enforced while the request is still being written, but expirations then are not counted
+   here. Retries count separately, so one client request can add more than one.
+
 .. ts:stat:: global proxy.process.http.origin_connections_throttled_out integer
    :type: counter
 

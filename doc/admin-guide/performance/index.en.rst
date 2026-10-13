@@ -344,6 +344,9 @@ should an attempt timeout. The timeout applies from the moment |TS| begins the
 connection attempt until the origin fully establishes a connection (the connection is ready to write).
 After the connection is established the value of
 :ts:cv:`proxy.config.http.transaction_no_activity_timeout_out` is used to established timeouts on the data over the connection.
+Reused origin connections skip the connect attempt, so this timeout does not apply to them. Use
+:ts:cv:`proxy.config.http.server_response_header_timeout` to limit how long |TS| waits for the origin to start
+responding on both new and reused connections.
 
 .. code-block:: yaml
 
@@ -450,6 +453,11 @@ and not transmitting data, for clients and origin servers respectively.
 Unlike the active transaction timeouts, these two inactive transaction timeout
 values prove somewhat more generally applicable.
 
+:ts:cv:`proxy.config.http.server_response_header_timeout` can set a shorter
+limit on the wait between sending the request to the origin server and receiving
+the first byte of its response. After that,
+:ts:cv:`proxy.config.http.transaction_no_activity_timeout_out` applies.
+
 .. code-block:: yaml
 
    records:
@@ -458,6 +466,7 @@ values prove somewhat more generally applicable.
        transaction_active_timeout_out: 0
        transaction_no_activity_timeout_in: 30
        transaction_no_activity_timeout_out: 30
+       server_response_header_timeout: 0
 
 WebSocket Timeouts
 ~~~~~~~~~~~~~~~~~~

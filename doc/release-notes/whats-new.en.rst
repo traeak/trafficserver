@@ -51,6 +51,11 @@ Configuration
   PING frames from origins separately from PING frames from clients. It
   defaults to ``300``; origin connections previously shared the client limit,
   ``60`` by default.
+* Added :ts:cv:`proxy.config.http.server_response_header_timeout` to limit how
+  long |TS| waits for an origin to start its response once the request has been
+  sent, on new and reused connections alike. Overridable; ``0``, the default,
+  leaves this wait on
+  :ts:cv:`proxy.config.http.transaction_no_activity_timeout_out`.
 * :ts:cv:`proxy.config.http2.default_buffer_water_mark` now defaults to ``32768``
   and no longer accepts values below ``1024``.
 * :ts:cv:`proxy.config.http.header_field_max_size` and
@@ -69,6 +74,9 @@ Metrics
   Sessions are bound to the policy that issued them, so an out-of-scope session
   completes a full handshake rather than reaching this counter, which is normally
   zero.
+* Added :ts:stat:`proxy.process.http.server_response_header_timeouts`, counting
+  expirations of :ts:cv:`proxy.config.http.server_response_header_timeout` after
+  the whole request had been written.
 * Added :ts:stat:`proxy.process.net.inactivity_cop_visited`.
 * Added :ts:stat:`proxy.process.net.inactivity_cop_budget_exhausted`.
 * Added :ts:stat:`proxy.process.net.inactivity_cop_passes`.
