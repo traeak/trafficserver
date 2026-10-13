@@ -269,6 +269,7 @@ private:
       cripts::IntConfig    response_server_enabled{"proxy.config.http.response_server_enabled"};
       cripts::StringConfig response_server_str{"proxy.config.http.response_server_str"};
       cripts::IntConfig    send_http11_requests{"proxy.config.http.send_http11_requests"};
+      cripts::IntConfig    server_response_header_timeout{"proxy.config.http.server_response_header_timeout"};
 
     private:
       class Server_Session_Sharing

@@ -166,6 +166,7 @@ TSOverridableConfigKey Value                                               Confi
 :enumerator:`TS_CONFIG_HTTP_RESPONSE_SERVER_ENABLED`                     :ts:cv:`proxy.config.http.response_server_enabled`
 :enumerator:`TS_CONFIG_HTTP_RESPONSE_SERVER_STR`                         :ts:cv:`proxy.config.http.response_server_str`
 :enumerator:`TS_CONFIG_HTTP_SEND_HTTP11_REQUESTS`                        :ts:cv:`proxy.config.http.send_http11_requests`
+:enumerator:`TS_CONFIG_HTTP_SERVER_RESPONSE_HEADER_TIMEOUT`              :ts:cv:`proxy.config.http.server_response_header_timeout`
 :enumerator:`TS_CONFIG_HTTP_SERVER_SESSION_SHARING_MATCH`                :ts:cv:`proxy.config.http.server_session_sharing.match`
 :enumerator:`TS_CONFIG_HTTP_SLOW_LOG_THRESHOLD`                          :ts:cv:`proxy.config.http.slow.log.threshold`
 :enumerator:`TS_CONFIG_HTTP_TRANSACTION_ACTIVE_TIMEOUT_IN`               :ts:cv:`proxy.config.http.transaction_active_timeout_in`

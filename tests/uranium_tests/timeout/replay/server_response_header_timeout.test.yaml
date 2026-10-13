@@ -1,0 +1,205 @@
+#  Licensed to the Apache Software Foundation (ASF) under one
+#  or more contributor license agreements.  See the NOTICE file
+#  distributed with this work for additional information
+#  regarding copyright ownership.  The ASF licenses this file
+#  to you under the Apache License, Version 2.0 (the
+#  "License"); you may not use this file except in compliance
+#  with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
+meta:
+  version: "1.0"
+
+urtest:
+  description: 'Verify proxy.config.http.server_response_header_timeout on new and reused origin connections'
+
+  server:
+    name: 'server'
+
+  client:
+    name: 'client'
+
+  ats:
+    name: 'ts'
+    process_config:
+      enable_cache: false
+
+    records_config:
+      proxy.config.diags.debug.enabled: 1
+      proxy.config.diags.debug.tags: 'http|http_ss'
+      proxy.config.http.server_response_header_timeout: 1
+      proxy.config.http.transaction_no_activity_timeout_out: 6
+      proxy.config.http.connect_attempts_max_retries: 0
+      proxy.config.http.server_session_sharing.pool: 'thread'
+
+    remap_config:
+      - from: "http://example.com/"
+        to: "http://127.0.0.1:{SERVER_HTTP_PORT}/"
+      - from: "http://fallback.example.com/"
+        to: "http://127.0.0.1:{SERVER_HTTP_PORT}/"
+        plugins:
+          - name: "conf_remap.so"
+            args:
+              - "proxy.config.http.server_response_header_timeout=0"
+      - from: "http://new.example.com/"
+        to: "http://127.0.0.1:{SERVER_HTTP_PORT}/"
+        plugins:
+          - name: "conf_remap.so"
+            args:
+              - "proxy.config.http.server_session_sharing.match=none"
+
+    metric_checks:
+      - metric: "proxy.process.http.total_server_connections"
+        value: 3
+      - metric: "proxy.process.http.origin.reuse"
+        value: 3
+      - metric: "proxy.process.http.server_response_header_timeouts"
+        value: 3
+
+# The transactions run in order over one client session so that the origin connection from each warm-up
+# request is pooled and reused by the request that follows it.
+sessions:
+- transactions:
+
+  # Open an origin connection that is pooled afterwards.
+  - client-request:
+      method: GET
+      url: /warm1
+      version: '1.1'
+      headers:
+        fields:
+        - [ Host, example.com ]
+        - [ uuid, warm1 ]
+        - [ Content-Length, 0 ]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [ Content-Length, 0 ]
+
+    proxy-response:
+      status: 200
+
+  # With the response header timeout overridden to 0, the inactivity timeout (6s) applies and the delayed
+  # response on the reused connection succeeds.
+  - client-request:
+      method: GET
+      url: /fallback
+      version: '1.1'
+      headers:
+        fields:
+        - [ Host, fallback.example.com ]
+        - [ uuid, fallback ]
+        - [ Content-Length, 0 ]
+
+    server-response:
+      delay: 2s
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [ Content-Length, 0 ]
+
+    proxy-response:
+      status: 200
+
+  # The reused connection skips the connect timeout, so the response header timeout (1s) is what cuts off the
+  # slow origin before the inactivity timeout (6s).
+  - client-request:
+      method: GET
+      url: /slow_get
+      version: '1.1'
+      headers:
+        fields:
+        - [ Host, example.com ]
+        - [ uuid, slow_get ]
+        - [ Content-Length, 0 ]
+
+    server-response:
+      delay: 4s
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [ Content-Length, 0 ]
+
+    proxy-response:
+      status: 504
+
+  # The timed out connection was closed, so open and pool another one.
+  - client-request:
+      method: GET
+      url: /warm2
+      version: '1.1'
+      headers:
+        fields:
+        - [ Host, example.com ]
+        - [ uuid, warm2 ]
+        - [ Content-Length, 0 ]
+
+    server-response:
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [ Content-Length, 0 ]
+
+    proxy-response:
+      status: 200
+
+  # The request body tunnel uses the inactivity timeout, so the response header timeout has to be restored
+  # once the body has been sent.
+  - client-request:
+      method: POST
+      url: /slow_post
+      version: '1.1'
+      headers:
+        fields:
+        - [ Host, example.com ]
+        - [ uuid, slow_post ]
+        - [ Content-Length, 16 ]
+      content:
+        size: 16
+
+    server-response:
+      delay: 4s
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [ Content-Length, 0 ]
+
+    proxy-response:
+      status: 504
+
+  # With session sharing disabled, a new origin connection is opened.  Once connected, the response header
+  # timeout (1s) cuts off the slow origin just as it does on a reused connection.
+  - client-request:
+      method: GET
+      url: /slow_new
+      version: '1.1'
+      headers:
+        fields:
+        - [ Host, new.example.com ]
+        - [ uuid, slow_new ]
+        - [ Content-Length, 0 ]
+
+    server-response:
+      delay: 4s
+      status: 200
+      reason: OK
+      headers:
+        fields:
+        - [ Content-Length, 0 ]
+
+    proxy-response:
+      status: 504
