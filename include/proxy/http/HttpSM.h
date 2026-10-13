@@ -458,6 +458,7 @@ private:
 
   virtual void        handle_api_return();
   void                handle_server_setup_error(int event, void *data);
+  bool                server_response_header_timeout_armed = false;
   void                handle_http_server_open();
   void                handle_post_failure();
   bool                prepare_for_origin_retry();
@@ -657,6 +658,8 @@ public:
   ink_hrtime get_server_inactivity_timeout();
   ink_hrtime get_server_active_timeout();
   ink_hrtime get_server_connect_timeout();
+  ink_hrtime get_server_response_header_timeout();
+  void       set_server_response_header_timeout();
   void       rewind_state_machine();
 
 private:

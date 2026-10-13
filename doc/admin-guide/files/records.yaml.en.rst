@@ -1741,6 +1741,35 @@ HTTP Connection Timeouts
 
    See :ref:`admin-performance-timeouts` for more discussion on |TS| timeouts.
 
+.. ts:cv:: CONFIG proxy.config.http.server_response_header_timeout INT 0
+   :reloadable:
+   :overridable:
+
+   Specifies how long, in seconds, |TS| waits for the first byte of the origin server's response after it has
+   sent the request. If the request has a body, the timeout starts once the body has been sent. Once the first
+   byte of the response arrives, :ts:cv:`proxy.config.http.transaction_no_activity_timeout_out` applies for the
+   rest of the transaction. A value of ``0`` uses the origin inactivity timeout for this wait as well, that is
+   :ts:cv:`proxy.config.http.transaction_no_activity_timeout_out` or the value set by a plugin with
+   ``TSHttpTxnNoActivityTimeoutSet()``. A nonzero value takes precedence over
+   ``TSHttpTxnNoActivityTimeoutSet()`` for this wait; a plugin can override this setting itself with
+   :func:`TSHttpTxnConfigIntSet`.
+
+   The timeout is armed again after a ``1xx`` interim response, such as ``100 Continue``, while |TS| waits
+   for the final response.
+
+   This timeout applies to reused (pooled) origin connections as well as new ones, whereas
+   :ts:cv:`proxy.config.http.connect_attempts_timeout` only covers establishing a new connection. Like an
+   inactivity timeout, it is restarted by any activity on the connection, such as writing the request.
+
+   When this timeout fires, |TS| treats it as an origin connection failure: the request is retried as
+   controlled by :ts:cv:`proxy.config.http.connect_attempts_max_retries`, the origin may be marked down as
+   controlled by :ts:cv:`proxy.config.http.connect.down.policy`, and the client receives a ``504`` response
+   once retries are exhausted. Setting this lower than a healthy origin's normal response time can therefore
+   mark that origin down.
+   Each expiration is counted in :ts:stat:`proxy.process.http.server_response_header_timeouts`.
+
+   See :ref:`admin-performance-timeouts` for more discussion on |TS| timeouts.
+
 .. ts:cv:: CONFIG proxy.config.websocket.no_activity_timeout INT 600
    :reloadable:
    :overridable:

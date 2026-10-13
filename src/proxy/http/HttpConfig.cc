@@ -460,6 +460,7 @@ register_stat_callbacks()
   http_rsb.server_first_connect_time         = Metrics::Counter::createPtr("proxy.process.http.milestone.server_first_connect");
   http_rsb.server_first_read_time            = Metrics::Counter::createPtr("proxy.process.http.milestone.server_first_read");
   http_rsb.server_read_header_done_time      = Metrics::Counter::createPtr("proxy.process.http.milestone.server_read_header_done");
+  http_rsb.server_response_header_timeouts   = Metrics::Counter::createPtr("proxy.process.http.server_response_header_timeouts");
   http_rsb.sm_finish_time                    = Metrics::Counter::createPtr("proxy.process.http.milestone.sm_finish");
   http_rsb.sm_start_time                     = Metrics::Counter::createPtr("proxy.process.http.milestone.sm_start");
   http_rsb.tcp_client_refresh_count          = Metrics::Counter::createPtr("proxy.process.http.tcp_client_refresh_count");
@@ -1046,6 +1047,7 @@ HttpConfig::startup()
 
   HttpEstablishStaticConfigLongLong(c.oride.transaction_active_timeout_in, "proxy.config.http.transaction_active_timeout_in");
   HttpEstablishStaticConfigLongLong(c.oride.transaction_active_timeout_out, "proxy.config.http.transaction_active_timeout_out");
+  HttpEstablishStaticConfigLongLong(c.oride.server_response_header_timeout, "proxy.config.http.server_response_header_timeout");
   HttpEstablishStaticConfigLongLong(c.accept_no_activity_timeout, "proxy.config.http.accept_no_activity_timeout");
 
   HttpEstablishStaticConfigLongLong(c.oride.background_fill_active_timeout, "proxy.config.http.background_fill_active_timeout");
@@ -1355,6 +1357,7 @@ HttpConfig::reconfigure()
   params->oride.transaction_no_activity_timeout_out = m_master.oride.transaction_no_activity_timeout_out;
   params->oride.transaction_active_timeout_in       = m_master.oride.transaction_active_timeout_in;
   params->oride.transaction_active_timeout_out      = m_master.oride.transaction_active_timeout_out;
+  params->oride.server_response_header_timeout      = m_master.oride.server_response_header_timeout;
   params->oride.websocket_active_timeout            = m_master.oride.websocket_active_timeout;
   params->oride.websocket_inactive_timeout          = m_master.oride.websocket_inactive_timeout;
   params->accept_no_activity_timeout                = m_master.accept_no_activity_timeout;

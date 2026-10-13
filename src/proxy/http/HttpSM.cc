@@ -278,6 +278,27 @@ HttpSM::get_server_connect_timeout()
   return retval;
 }
 
+// Applies while waiting for the first byte of the origin response, after the request has been sent.
+// Falls back to the inactivity timeout when unset.
+ink_hrtime
+HttpSM::get_server_response_header_timeout()
+{
+  ink_hrtime retval = 0;
+  if (t_state.txn_conf->server_response_header_timeout > 0) {
+    retval = HRTIME_SECONDS(t_state.txn_conf->server_response_header_timeout);
+  } else {
+    retval = get_server_inactivity_timeout();
+  }
+  return retval;
+}
+
+void
+HttpSM::set_server_response_header_timeout()
+{
+  server_txn->set_inactivity_timeout(get_server_response_header_timeout());
+  server_response_header_timeout_armed = t_state.txn_conf->server_response_header_timeout > 0;
+}
+
 HttpSM::HttpSM() : Continuation(nullptr), vc_table(this) {}
 
 HttpSM::~HttpSM()
@@ -2110,13 +2131,14 @@ HttpSM::state_read_server_response_header(int event, void *data)
 
   // Reset the inactivity timeout if this is the first
   //   time we've been called.  The timeout had been set to
-  //   the connect timeout when we set up to read the header
+  //   the response header timeout when we set up to read the header
   //
   if (server_response_hdr_bytes == 0) {
     ATS_PROBE1(milestone_server_first_read, sm_id);
     milestones[TS_MILESTONE_SERVER_FIRST_READ] = ink_get_hrtime();
 
     server_txn->set_inactivity_timeout(get_server_inactivity_timeout());
+    server_response_header_timeout_armed = false;
 
     // For requests that contain a body, we can cancel the ua inactivity timeout.
     if (_ua.get_txn() &&
@@ -3074,6 +3096,10 @@ HttpSM::tunnel_handler_post(int event, void *data)
 
       call_transact_and_set_next_state(HttpTransact::HandleRequestBufferDone);
       break;
+    }
+    // Now waiting on the origin to start its response
+    if (server_txn != nullptr && server_response_hdr_bytes == 0) {
+      set_server_response_header_timeout();
     }
     // Is the response header ready and waiting?
     // If so, go ahead and do the hook processing
@@ -6599,6 +6625,15 @@ HttpSM::handle_server_setup_error(int event, void *data)
 
   STATE_ENTER(handle_server_setup_error, event);
 
+  // Count the wait for the first response byte separately from a generic origin stall so operators can
+  // tell a slow-to-start origin apart from one that stalled mid-body.  This is the single funnel for
+  // every origin timeout, including the ones routed onward to an active tunnel, and is cleared here so
+  // a given timeout is counted exactly once.
+  if (event == VC_EVENT_INACTIVITY_TIMEOUT && server_response_header_timeout_armed) {
+    Metrics::Counter::increment(http_rsb.server_response_header_timeouts);
+    server_response_header_timeout_armed = false;
+  }
+
   // If there is POST or PUT tunnel wait for the tunnel
   //  to figure out that things have gone to hell
 
@@ -6926,6 +6961,7 @@ HttpSM::do_setup_client_request_body_tunnel(HttpVC_t to_vc_type)
 
   _ua.get_txn()->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_in));
   server_txn->set_inactivity_timeout(get_server_inactivity_timeout());
+  server_response_header_timeout_armed = false;
 
   tunnel.tunnel_run(p);
 
@@ -7250,10 +7286,8 @@ HttpSM::setup_server_send_request()
   milestones[TS_MILESTONE_SERVER_BEGIN_WRITE] = ink_get_hrtime();
   server_entry->write_vio                     = server_entry->vc->do_io_write(this, hdr_length, buf_start);
 
-  // Make sure the VC is using correct timeouts.  We may be reusing a previously used server session
-  server_txn->set_inactivity_timeout(get_server_inactivity_timeout());
-
-  // Go on and set up the read response header too
+  // Go on and set up the read response header too.  This also resets the timeouts, since we may be
+  // reusing a previously used server session.
   setup_server_read_response_header();
 }
 
@@ -7285,6 +7319,10 @@ HttpSM::setup_server_read_response_header()
   http_parser_clear(&http_parser);
   server_response_hdr_bytes                        = 0;
   milestones[TS_MILESTONE_SERVER_READ_HEADER_DONE] = 0;
+
+  // Reset to the inactivity timeout on the first response byte in state_read_server_response_header().  A request
+  // body tunnel uses the inactivity timeout until the body has been sent.
+  set_server_response_header_timeout();
 
   // The tunnel from OS to UA is now setup.  Ready to read the response
   server_entry->read_vio = server_txn->do_io_read(this, INT64_MAX, server_txn->get_remote_reader()->mbuf);

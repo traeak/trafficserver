@@ -306,6 +306,7 @@ struct HttpStatsBlock {
   Metrics::Counter::AtomicType *server_first_connect_time;
   Metrics::Counter::AtomicType *server_first_read_time;
   Metrics::Counter::AtomicType *server_read_header_done_time;
+  Metrics::Counter::AtomicType *server_response_header_timeouts;
   Metrics::Counter::AtomicType *sm_finish_time;
   Metrics::Counter::AtomicType *sm_start_time;
   Metrics::Counter::AtomicType *tcp_client_refresh_count;
@@ -721,6 +722,7 @@ struct OverridableHttpConfigParams {
   MgmtInt transaction_no_activity_timeout_in  = 30;
   MgmtInt transaction_no_activity_timeout_out = 30;
   MgmtInt transaction_active_timeout_out      = 0;
+  MgmtInt server_response_header_timeout      = 0;
   MgmtInt transaction_active_timeout_in       = 900;
   MgmtInt websocket_active_timeout            = 3600;
   MgmtInt websocket_inactive_timeout          = 600;
