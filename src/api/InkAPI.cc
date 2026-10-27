@@ -9642,7 +9642,24 @@ TSReturnCode
 TSLogFieldRegister(std::string_view name, std::string_view symbol, TSLogType type, TSLogMarshalCallback marshal_cb,
                    TSLogUnmarshalCallback unmarshal_cb, bool replace)
 {
-  if (auto ite = Log::field_symbol_hash.find(symbol.data()); ite != Log::field_symbol_hash.end()) {
+  // TSLogType mirrors LogField::Type's values and is static_cast to it below.
+  // apidefs.h.in can't reference LogField::Type, so pin the alignment here (the
+  // only TU that sees both) -- a reorder then fails to compile.
+  static_assert(static_cast<int>(TS_LOG_TYPE_INT) == static_cast<int>(LogField::Type::sINT));
+  static_assert(static_cast<int>(TS_LOG_TYPE_STRING) == static_cast<int>(LogField::Type::STRING));
+  static_assert(static_cast<int>(TS_LOG_TYPE_ADDR) == static_cast<int>(LogField::Type::IP));
+
+  // Reject an invalid type before touching the registry, so a failed replace
+  // leaves the existing field in place.
+  if (type != TS_LOG_TYPE_INT && type != TS_LOG_TYPE_STRING && type != TS_LOG_TYPE_ADDR) {
+    return TS_ERROR;
+  }
+
+  // The views need not be NUL-terminated, but the lookup and LogField take C strings.
+  const std::string name_str{name};
+  const std::string symbol_str{symbol};
+
+  if (auto ite = Log::field_symbol_hash.find(symbol_str); ite != Log::field_symbol_hash.end()) {
     if (replace) {
       // Symbol is registered and the plugin wants to replace it.
       // Need to unregister the existing entry first.
@@ -9654,21 +9671,8 @@ TSLogFieldRegister(std::string_view name, std::string_view symbol, TSLogType typ
     }
   }
 
-  // TSLogType mirrors LogField::Type's values and is static_cast to it below.
-  // apidefs.h.in can't reference LogField::Type, so pin the alignment here (the
-  // only TU that sees both) -- a reorder then fails to compile.
-  static_assert(static_cast<int>(TS_LOG_TYPE_INT) == static_cast<int>(LogField::Type::sINT));
-  static_assert(static_cast<int>(TS_LOG_TYPE_STRING) == static_cast<int>(LogField::Type::STRING));
-  static_assert(static_cast<int>(TS_LOG_TYPE_ADDR) == static_cast<int>(LogField::Type::IP));
-
-  // Reject anything outside the public set before the cast, so a bad plugin
-  // value can't become an INVALID/out-of-range LogField::Type and trip the ctor.
-  if (type != TS_LOG_TYPE_INT && type != TS_LOG_TYPE_STRING && type != TS_LOG_TYPE_ADDR) {
-    return TS_ERROR;
-  }
-
   LogField *field = new LogField(
-    name.data(), symbol.data(), static_cast<LogField::Type>(type),
+    name_str.c_str(), symbol_str.c_str(), static_cast<LogField::Type>(type),
     [marshal_cb = std::move(marshal_cb)](void *sm, char *buf) -> int { return marshal_cb(reinterpret_cast<TSHttpTxn>(sm), buf); },
     unmarshal_cb);
   Log::register_field(field);
@@ -9680,7 +9684,9 @@ int
 TSLogStringMarshal(char *buf, std::string_view str)
 {
   if (buf) {
-    ink_strlcpy(buf, str.data(), str.length() + 1);
+    // The view need not be NUL-terminated, so copy exactly its length.
+    memcpy(buf, str.data(), str.length());
+    buf[str.length()] = '\0';
   }
   return str.length() + 1;
 }
@@ -9761,6 +9767,10 @@ TSLogAddrMarshal(char *buf, sockaddr *addr)
 std::tuple<int, int>
 TSLogAddrUnmarshal(char **buf, char *dest, int len)
 {
+  if (dest == nullptr || len <= 0) {
+    return {-1, -1};
+  }
+
   IpEndpoint endpoint;
   int        read_len = sizeof(LogFieldIp);
 
@@ -9782,11 +9792,14 @@ TSLogAddrUnmarshal(char **buf, char *dest, int len)
   }
 
   if (!ats_is_ip(&endpoint) && !ats_is_unix(&endpoint)) {
+    if (len < 2) {
+      return {-1, -1}; // no room for "0" plus the NUL
+    }
     dest[0] = '0';
     dest[1] = '\0';
     return {-1, 1};
   } else if (ats_ip_ntop(&endpoint, dest, len)) {
-    return {read_len, static_cast<int>(::strlen(dest))};
+    return {read_len, static_cast<int>(::strnlen(dest, len))};
   }
 
   return {-1, -1};
