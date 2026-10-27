@@ -894,21 +894,22 @@ parse_yaml_remap_rule(const YAML::Node &node, BUILD_TABLE_INFO *bti)
     if (0 == getaddrinfo(fromHost_lower, nullptr, nullptr, &ai_records)) {
       for (addrinfo *ai_spot = ai_records; ai_spot; ai_spot = ai_spot->ai_next) {
         if (ats_is_ip(ai_spot->ai_addr) && !ats_is_ip_any(ai_spot->ai_addr) && ai_spot->ai_protocol == IPPROTO_TCP) {
-          url_mapping *u_mapping;
+          auto u_mapping = std::make_unique<url_mapping>();
 
           ats_ip_ntop(ai_spot->ai_addr, ipb, sizeof ipb);
-          u_mapping = new url_mapping;
           u_mapping->fromURL.create(nullptr);
           u_mapping->fromURL.copy(&new_mapping->fromURL);
           u_mapping->fromURL.host_set({ipb});
           u_mapping->toURL.create(nullptr);
           u_mapping->toURL.copy(&new_mapping->toURL);
 
-          if (!bti->rewrite->InsertForwardMapping(maptype, u_mapping, ipb)) {
+          // InsertForwardMapping takes ownership only on success.
+          if (!bti->rewrite->InsertForwardMapping(maptype, u_mapping.get(), ipb)) {
             errStr = "unable to add mapping rule to lookup table";
             freeaddrinfo(ai_records);
             goto MAP_ERROR;
           }
+          u_mapping.release();
         }
       }
 

@@ -263,3 +263,34 @@ SCENARIO("Parsing UrlRewrite", "[proxy][remap]")
     }
   }
 }
+
+SCENARIO("Tunnel remap rules whose resolved addresses collide", "[proxy][remap]")
+{
+  GIVEN("A tunnel rule for an address and a tunnel rule for a host resolving to it")
+  {
+    auto urlrw = std::make_unique<UrlRewrite>();
+    urlrw->set_remap_yaml(true);
+
+    std::string config = R"RMCFG(
+    remap:
+      - type: map
+        from:
+          url: tunnel://127.0.0.1:443/
+        to:
+          url: tunnel://origin.example.com:443/
+      - type: map
+        from:
+          url: tunnel://localhost:443/
+        to:
+          url: tunnel://origin.example.com:443/
+  )RMCFG";
+
+    auto           cpath = write_test_remap(config, "tunnel_ip_collision");
+    ts::PostScript file_cleanup([&]() -> void { std::filesystem::remove(cpath.c_str()); });
+
+    THEN("the duplicate address mapping is rejected without leaking it")
+    {
+      REQUIRE(urlrw->BuildTable(cpath.c_str()) != TS_SUCCESS);
+    }
+  }
+}

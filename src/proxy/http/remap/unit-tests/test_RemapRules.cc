@@ -324,3 +324,23 @@ map http://a-very-long-host-name-for-simd.example.com http://origin.example.com
     }
   }
 }
+
+SCENARIO("Tunnel remap rules whose resolved addresses collide", "[proxy][remap]")
+{
+  GIVEN("A tunnel rule for an address and a tunnel rule for a host resolving to it")
+  {
+    auto        urlrw  = std::make_unique<UrlRewrite>();
+    std::string config = R"RMCFG(
+map tunnel://127.0.0.1:443/ tunnel://origin.example.com:443/
+map tunnel://localhost:443/ tunnel://origin.example.com:443/
+  )RMCFG";
+
+    auto           cpath = write_test_remap(config, "tunnel_ip_collision");
+    ts::PostScript file_cleanup([&]() -> void { std::filesystem::remove(cpath.c_str()); });
+
+    THEN("the duplicate address mapping is rejected without leaking it")
+    {
+      REQUIRE(urlrw->BuildTable(cpath.c_str()) != TS_SUCCESS);
+    }
+  }
+}
